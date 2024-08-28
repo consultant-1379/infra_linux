@@ -1,0 +1,588 @@
+#!/bin/bash
+# ----------------------------------------------------------------------
+#
+# NAME system_checks.bsh
+#
+# COPYRIGHT Ericsson Radio Systems AB, Sweden, 2018
+# All rights reserved.
+#
+# The Copyright to the computer program(s) herein is the property of Ericsson
+# Radio Systems AB, Sweden. The program(s) may be used and/or copied only with
+# the written permission from Ericsson Radio Systems AB or in accordance with
+# the terms and conditions stipulated in the agreement/contract under which the
+# program(s) have been supplied.
+#
+# Revision History:
+#  Date        Who       Comments
+#  19-01-2010  EDAVGLY   Base Script for 11.2.11 sparc/x86
+
+
+# Command
+UNAME=/usr/bin/uname
+EGREP=/usr/bin/egrep
+GREP=/usr/bin/grep
+HEAD=/bin/head
+SED=/usr/bin/sed
+MKDIR=/usr/bin/mkdir
+ID=/usr/bin/id
+AWK=/usr/bin/awk
+TAIL=/usr/bin/tail
+NSLOOKUP=/usr/bin/nslookup
+SYSTEMCTL=/usr/bin/systemctl
+SLEEP=/usr/bin/sleep
+TOUCH=/usr/bin/touch
+SSH=/usr/bin/ssh
+CP=/usr/bin/cp
+RPM=/usr/bin/rpm
+RM=/usr/bin/rm
+GUNZIP=/usr/bin/gunzip
+DIRNAME=/usr/bin/dirname
+CAT=/usr/bin/cat
+ECHO=/usr/bin/echo
+DATE=/usr/bin/date
+CLEAR=/usr/bin/clear
+LN=/usr/bin/ln
+YUM=/usr/bin/yum
+UNLINK=/usr/sbin/unlink
+CUT=/usr/bin/cut
+flag=0
+#///////////////////////
+# Globals
+#///////////////////////
+SINGLE_PACKAGE_NAME="" # used with -x argument
+
+
+#/////////////////////////////////////////////
+# Print Header
+#
+#
+#
+#/////////////////////////////////////////////
+header_print()
+{
+        echo "$1" | awk '{n1=length($0);n2=36-n1/2-n1%2;n3=34-n1/2;printf("\n\n");for(n=1;n<n2;n++)printf("=");printf("=< %s >=",$0);for(n=1;n<n3;n++)printf("=");printf("\n\n")}'
+}
+#/////////////////////////////////////////////
+# Print Header
+#
+#
+#
+#/////////////////////////////////////////////
+setup() {
+
+        LOGDIR="/var/ericsson/log/OM_UPGRADE"
+        TEMP_LOCATION=/tmp/.tmp_location.$$
+
+        $MKDIR -p ${LOGDIR}
+        if [[ $? != 0 ]]; then
+                echo -e "\nFailed to make ${LOGDIR}\n"
+                exit 1
+        fi
+
+        $MKDIR -p ${TEMP_LOCATION}
+        if [[ $? != 0 ]]; then
+                echo -e "\nFailed to make ${TEMP_LOCATION}\n"
+                exit 1
+        fi
+
+
+        if [[ -z ${SOFTWARE_LOCATION} ]]; then
+                echo -e "\n\nUnable to read software location supplied\n"
+                usage
+                exit 1
+        fi
+
+        if [[ ! -f ${SOFTWARE_LOCATION}/.om_linux ]]; then
+                echo -e "\n\nInvalid OM Software Location\n\n"
+                exit 1
+        fi
+
+        ADMFILE=${SOFTWARE_LOCATION}/omtools/etc/package.adm
+        SOFTWARE_LIST="${SOFTWARE_LOCATION}/omtools/om_software"
+
+        if [[ ! -s "${SOFTWARE_LIST}" ]]; then
+                echo -e "\n${SOFTWARE_LIST} does not exist or is empty\n"
+                exit 1
+        fi
+
+        return 0
+
+}
+getout() {
+
+        echo -e "   --- FATAL ERROR"
+
+        $RM -rf ${TEMP_LOCATION}
+
+        stop_log
+        exit 1
+
+}
+#/////////////////////////////////////////////
+# start_log
+# This is to be called at the start of each user function within this script
+# It requires one parameter, which is the name of the file.
+# It creates log file of the user run using fancy pipes
+#
+#/////////////////////////////////////////////
+start_log() {
+
+        LOG_STAGE=$1
+
+        LOGFILE=${LOGDIR}/${LOG_STAGE}_$( date +%y%m%d-%H_%M_%S ).log
+
+        $TOUCH ${LOGFILE}
+        if [[ $? != 0 ]]; then
+                echo -e "   --- Failed to create log file ${LOGFILE}"
+                exit 1
+        fi
+
+}
+#/////////////////////////////////////////////
+# stop_log
+# This is to be called at the end of each user function within this script
+# It closes the log file and pipes
+#
+#/////////////////////////////////////////////
+stop_log() {
+
+        # restore fds, close 3 & 4
+        exec 1>&3 3>&- 2>&4 4>&-
+
+        # tee should have exited now, as its fd was closed when restoring 3 & 4 fds to 1 & 2
+        # for some reason, tee doesnt exit in stage 15 ?!?
+        # so we kill it, instead of doing a wait
+
+        # sleep for a bit, to allow tee to die on its own
+        sleep 6
+        ps -p $tee_pid 1>/dev/null && kill $tee_pid
+
+}
+
+#/////////////////////////////////////////////
+# Upgrade Packages
+#
+#
+#
+#/////////////////////////////////////////////
+upgrade_packages() {
+
+        start_log "upgrade_om_packages"
+
+        local _result_=0
+        local _current_server_=$1
+        local _emc_str_=""
+        local _package_list_=""
+
+        header_print "Upgrading OM Packages `${DATE} '+%Y-%m-%d-%H-%M-%S'`"
+        if [[ -z ${SINGLE_PACKAGE_NAME} ]]; then
+                echo "Processing packages to install from ${SOFTWARE_LIST}"
+                _package_list_=`$CAT ${SOFTWARE_LIST}`
+        else
+                echo "Installing single package: ${SINGLE_PACKAGE_NAME}"
+                _package_list_=` $GREP $SINGLE_PACKAGE_NAME ${SOFTWARE_LIST} `
+        fi
+
+        if [[ -z ${_package_list_} ]]; then
+                if [[ -z ${SINGLE_PACKAGE_NAME} ]]; then
+                        echo "No Packages found  in ${SOFTWARE_LIST}"
+                else
+                        echo "No ${SINGLE_PACKAGE_NAME} Package found  in ${SOFTWARE_LIST}"
+                fi
+                getout
+        fi
+
+
+        echo "Packages to be installed: ${_package_list_}"
+
+        for i in ${_package_list_}
+        do
+                local  _pkg_location_file_=`$ECHO $i | $AWK -F: '{print $1}'`
+                local _pkg_name_=`$ECHO $i | $AWK -F: '{print $2}'`
+                local _pkg_location_om_=`$ECHO ${SOFTWARE_LOCATION}/${_pkg_location_file_}`
+                local _server_type_=`$ECHO $i | $AWK -F: '{print $3}'`
+
+                if [[ -z ${_pkg_location_file_} ]]; then
+                        echo -e "Could not read package location from ${SOFTWARE_LIST}"
+                        getout
+                fi
+
+                if [[ -z ${_pkg_name_} ]]; then
+                        echo -e "Could not read package name from ${SOFTWARE_LIST}"
+                        getout
+                fi
+
+                if [[ -z ${_server_type_} ]]; then
+                        echo -e "Could not read server install type from ${SOFTWARE_LIST}"
+                        getout
+                fi
+
+                if [[ -f ${_pkg_location_om_}/${_pkg_name_} ]]; then
+
+                        if [[ ${_server_type_} != "all" ]]; then
+                                if [[ ${_server_type_} =  ${_current_server_} ]]; then
+                                   continue 
+                                fi
+                        fi
+
+		       if [[ ${_server_type_} = "all" ]]; then 	
+                                if [[ ${_server_type_}  =  ${_current_server_} ]]; then
+                                   continue 
+                                fi
+                       fi
+
+
+			install_function | /usr/bin/tee -a ${LOGFILE}
+
+                fi
+
+        done
+$ECHO "#####################################################################"
+$ECHO "#        selfmon Dependency Packages not available                  #"
+$ECHO "#                                                                   #"
+$ECHO "#####################################################################"
+        echo -e "   --- Log location: ${LOGFILE}"
+        header_print "Finished OM Software Upgrade `${DATE} '+%Y-%m-%d-%H-%M-%S'`"
+
+
+
+        return 0
+}
+
+#/////////////////////////////////////////////
+# Function performs installation/removal of packages
+#
+#
+# Arguments: $1-package $2-location
+#/////////////////////////////////////////////
+verify_repo(){
+
+ddc_repo=/etc/yum.repos.d/ericDDC.repo
+#selfmon_repo=/etc/yum.repos.d/ericselfmon.repo
+EMC_repo=/etc/yum.repos.d/ericEMC.repo
+security_repo=/etc/yum.repos.d/ericSecurity.repo
+
+if [[ -e $ddc_repo ]] || [[ -e $EMC_repo ]] || [[ -e $security_repo ]] ; then
+        $RM -rf $ddc_repo $EMC_repo $security_repo
+        if [ $? -eq 0 ] ; then
+                $ECHO " Successfuly removed old repos"
+        else
+                $ECHO "Could not remove old repos"
+                getout
+        fi
+
+fi
+
+for i in $ddc_repo $EMC_repo
+do
+	ls -lrt $i > /dev/null 2>&1
+	if [ $? -ne 0 ] ; then
+                create_yum_repo
+                if [ $? -eq 0 ] ; then
+                        $ECHO -e "Creating Repo files for DDC and EMC \n"
+                else
+                        $ECHO -e "Creating Repo file for DDC and EMC failed\n"
+			exit 1
+                fi
+
+	fi
+done
+
+}
+
+#/////////////////////////////////////////////
+# Function performs installation/removal of packages
+#
+#
+# Arguments:None
+#/////////////////////////////////////////////
+
+install_function()
+{
+ddc=${SOFTWARE_LOCATION}/ddc/packages.inc
+#selfmon=${SOFTWARE_LOCATION}/selfmon/packages.inc
+EMC=${SOFTWARE_LOCATION}/EMC/packages.inc
+
+	if [[  -f "$ddc" ]] ; then
+		if [[ $flag -eq 0 ]] ; then  
+                    while read line
+                    do
+		   	PKG=$line
+		   	echo -e "======================================================================================== \n"
+		   	echo -e "   --- Package: ${PKG}"
+			echo -e "   --- Location: ${SOFTWARE_LOCATION}/ddc/${PKG}\n"
+
+                   	$RPM -qi ${PKG} >/dev/null 2>&1
+               	   	installed=$?
+                   		if [ $installed -ne 0 ]; then
+                        		$ECHO -e "\n--> Installing ${PKG}\n"
+                                	$YUM install -y $PKG
+                                		if [ $? -eq 0 ] ; then
+                                  			$ECHO -e "Sucessfully installed $PKG\n"
+                      	                        else
+                             		                $ECHO -e "Could not install $PKG\n"
+							exit 1
+                                	        fi
+		   		else
+					$ECHO -e "\n--> ${PKG} already installed\n"
+                   		fi
+                    done <  "${SOFTWARE_LOCATION}/ddc/packages.inc"
+                    let "flag=$flag+1"
+		fi
+	else
+		$ECHO -e "ERROR: Could not find ${SOFTWARE_LOCATION}/ddc/packages.inc, Failed to install DDC packages\n"
+		$ECHO -e "Create ${SOFTWARE_LOCATION}/ddc/packages.inc file, then continue\n"
+		exit 1
+	fi
+
+	if [[  -f "$EMC" ]] ; then
+		if  [[ $flag -eq 0 ]] || [[ $flag -eq 1 ]] ; then 
+                    while read line
+                    do
+ 		       PKG=$line
+		       echo -e "======================================================================================== \n"
+                       echo -e "   --- Package: ${PKG}"
+		       echo -e "   --- Location: ${SOFTWARE_LOCATION}/EMC/${PKG}\n"
+
+                       $RPM -qi ${PKG} >/dev/null 2>&1
+               	       installed=$?
+                   	       if [ $installed -ne 0 ]; then
+                        		$ECHO -e "\n--> Installing ${PKG}\n"
+                                	$YUM install -y $PKG --skip-broken
+                                		if [ $? -eq 0 ] ; then
+                                     			$ECHO -e "Sucessfully installed $PKG\n"
+                                		else
+                                     			$ECHO -e "Could not install $PKG\n"
+							exit 1	
+                                		fi
+		   		else
+					$ECHO -e "\n--> ${PKG} already installed\n"
+                   		fi
+                    done < "${SOFTWARE_LOCATION}/EMC/packages.inc"
+                    let "flag=$flag+1"
+		fi
+	else
+		$ECHO -e "ERROR:Could not find ${SOFTWARE_LOCATION}/EMC/packages.inc, Failed to install EMC packages\n"
+		$ECHO -e "Create ${SOFTWARE_LOCATION}/EMC/packages.inc,then continue\n"
+		exit 1
+	fi
+
+}
+
+
+create_yum_repo()
+{
+$CAT >/etc/yum.repos.d/ericDDC.repo <<EOL
+[ericDDC]
+name=Ericsson DDC
+baseurl=file://${SOFTWARE_LOCATION}/ddc
+gpgcheck=0
+enabled=1
+EOL
+
+$CAT >/etc/yum.repos.d/ericEMC.repo <<EOL
+[ericEMC]
+name=Ericsson EMC
+baseurl=file://${SOFTWARE_LOCATION}/EMC
+gpgcheck=0
+enabled=1
+EOL
+
+$CAT >/etc/yum.repos.d/ericSecurity.repo <<EOL
+[ericSecurity]
+name=Ericsson Nodehardening
+baseurl=file://${SOFTWARE_LOCATION}/security
+gpgcheck=0
+enabled=1
+EOL
+
+}
+
+
+
+
+
+############################################
+# using ISO does not create /ericsson/config
+#
+# Applicable only for MWS and OMBS
+#
+#
+#/////////////////////////////////////////////
+uar_update_config()
+{
+        local eric_conf="/ericsson/ombss"
+        local conf_dir="/ericsson/config"
+        if [ ! -d $conf_dir ]; then
+                $MKDIR -p $conf_dir
+                if [[ $? != 0 ]]; then
+                        echo -e "Failed to make $conf_dir"
+                        getout
+                fi
+        fi
+        if [ ! -d $eric_conf ]; then
+                if [ ! -f $conf_dir/ericsson_use_config ]; then
+                        $CAT > $conf_dir/ericsson_use_config <<EOF
+config=mws
+EOF
+                        echo "$conf_dir/ericsson_use_config is updated"
+        fi
+                if [ ! -f $conf_dir/inst_type ]; then
+                        $CAT > $conf_dir/inst_type <<EOF
+rhelonly
+EOF
+                        echo "$conf_dir/inst_type is updated"
+                fi
+            else
+              #This is OMBS server
+                #create /ericsson/config/inst_type if file not exist and write "ombs" to it
+                if [ ! -f $conf_dir/inst_type ]; then
+                        $CAT > $conf_dir/inst_type <<EOF
+ombs
+EOF
+                        echo "$conf_dir/inst_type is updated "
+                fi
+        fi
+}
+
+
+#/////////////////////////////////////////////
+#
+#
+#
+#
+#
+#/////////////////////////////////////////////
+usage()
+{
+        ${ECHO} "
+        Usage: ${SCRIPTNAME} { -p < OM SOFTWARE LOCATION > } { -a <all |mws > } [ -x Package Name ]
+        options:
+
+        -p  : Location of OM Software
+        -a  : Used to install/upgrade OM packages, must pass either mws or all
+        -x  : Used to specify a single package to be upgraded. Only valid when server type is mws
+  "
+        return 0
+}
+#/////////////////////////////////////////////
+#
+#
+#
+#
+#
+#/////////////////////////////////////////////
+main_wrapper() {
+
+AOPT=""
+SINGLE_PACKAGE_NAME=""
+SOFTWARE_LOCATION=""
+
+while getopts a:p:x:hH DOWHAT; do
+        case ${DOWHAT} in
+
+            H|h) usage  #What can I do you for?!
+                ;;
+
+            a) AOPT=$OPTARG
+                ;;
+
+            x) SINGLE_PACKAGE_NAME=$OPTARG
+                ;;
+
+            p)    SOFTWARE_LOCATION=${OPTARG}
+                ;;
+
+            *) RESULT=1
+                usage            #invalid parameter
+                ;;
+        esac
+    done
+
+# Check the mandatory parameters (I have assumed that -p is mandatory)
+if [[ -z ${AOPT} ]]; then
+  echo Mandatory -a parameter missing
+  usage
+  exit 1
+fi
+if [[ -z ${SOFTWARE_LOCATION} ]]; then
+  echo Mandatory -p parameter missing
+  usage
+  exit 1
+fi
+
+# Only support -x if -a is "mws"
+if [ -n "$SINGLE_PACKAGE_NAME" -a "$AOPT" != "mws" ]; then
+  echo "Can only specify -x if -a is mws"
+  usage
+  exit 1
+fi
+
+case ${AOPT} in
+    mws)
+        # Do whatever it is you want with $SINGLE_PACKAGE_NAME here
+                if [[ -n ${SINGLE_PACKAGE_NAME} ]]; then
+                        echo "Using $SINGLE_PACKAGE_NAME here in upgrade package"
+                fi
+        setup
+	verify_repo | /usr/bin/tee -a ${LOGFILE}
+        upgrade_packages mws
+        (( $? != 0 )) && RESULT=1
+                uar_update_config
+        ;;
+    all)
+        setup
+	verify_repo | /usr/bin/tee -a ${LOGFILE}
+        upgrade_packages all
+	(( $? != 0 )) && RESULT=1
+	 ;;
+
+    *)  usage
+        exit 1
+        ;;
+esac
+}
+
+#/////////////////////////////////////////////
+#
+#
+#
+#
+#
+#/////////////////////////////////////////////
+exit_script()
+{
+        echo -e "\n FATAL ERROR \n"
+        exit 1
+
+}
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+##### MAIN
+
+#===========================================
+
+
+# Must be run as user root
+if ! ( ${ID} | ${GREP} '(root)' 1>/dev/null 2>&1 ); then
+        echo "You must be 'root' to run this script!"
+        exit_script 1
+fi
+
+ARCH_TYPE=`$UNAME -p`
+if [ $? -ne 0 ]; then
+        echo -e "Arch could not be determined, exiting" && exit_script
+fi
+
+trap getout TERM INT HUP
+
+
+main_wrapper $*
+exit 0
+
+

@@ -1,0 +1,6 @@
+nfs
+autofs
+multi-user.target
+httpd
+tftp
+xinetd

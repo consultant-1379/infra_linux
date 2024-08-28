@@ -1,0 +1,533 @@
+#!/bin/bash
+# Veritas Access Red Hat Linux Patching Script
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2019 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : upgrade_patchrhel.bsh
+# Date    : 02/01/2019
+# Revision: A
+# Purpose : This script is to update the RHEL patch 
+#
+#
+# Version Information:
+#       Version Who             Date            Comment
+#       0.1     xanjgop & xkumvig         02/01/2019      Initial draft
+#
+# Usage   : "upgrade_patchrhel.bsh -h" to give usage
+#
+# ********************************************************************
+
+ARGS="${@}"
+IFSORIG=$IFS
+
+setVars() {
+#####################################
+# Function to set up global Variables
+#####################################
+# Function to set up global Variables
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0 or 1
+#####################################
+
+# Commands
+BASH=/bin/bash
+AT=/usr/bin/at
+AWK=/usr/bin/awk
+BASENAME=/bin/basename
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CKSUM=/usr/bin/cksum
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+CRONTAB=/usr/bin/crontab
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DATETIME=`$DATE +%d-%m-%Y_%H-%M-%S`
+YUMDATE=$($DATE "+%Y-%m-%d %H:%M")
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+ETHTOOL=/sbin/ethtool
+FGREP=/bin/fgrep
+FIND=/usr/bin/find
+AWK=/usr/bin/awk
+GREP=/usr/bin/grep
+HEAD=/usr/bin/head
+HOSTNAME=/bin/hostname
+IFCONFIG=/sbin/ifconfig
+LS=/usr/bin/ls
+LSHAL=/usr/bin/lshal
+DMIDECODE=/usr/sbin/dmidecode
+MKDIR=/usr/bin/mkdir
+MOUNT=/usr/bin/mount
+UMOUNT=/usr/bin/umount
+MV=/usr/bin/mv
+PASTE=/usr/bin/paste
+PRINTF=/usr/bin/printf
+RM=/usr/bin/rm
+RPM=/usr/bin/rpm
+SCP=/usr/bin/scp
+SED=/usr/bin/sed
+SERVICE=/sbin/service
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+TAIL=/usr/bin/tail
+TAR=/usr/bin/tar
+TEE=/usr/bin/tee
+TELINIT=/sbin/telinit
+TOUCH=/usr/bin/touch
+TR=/usr/bin/tr
+UNAME=/usr/bin/uname
+UNIQ=/usr/bin/uniq
+WC=/usr/bin/wc
+YUM=/usr/bin/yum
+# Flags
+DEBUG=n
+NEED_REBOOT=FALSE
+SILENT=FALSE
+PROMPT=TRUE
+REBOOT_WARN=FALSE
+NFS_RESTART=FALSE
+CONSOLE_PROMPT=TRUE
+# paths 1
+SCRIPT_NAME=$( $BASENAME $0 )
+SCRIPT_DIR=$( cd $( dirname $0 ); pwd )
+LIB_DIR=$( cd $( dirname $0 ); pwd -P )
+LIB_DIR="$LIB_DIR/../lib/"
+LOG_DIR=/var/ericsson/log/patch
+LOG=${LOG_DIR}/${SCRIPT_NAME}_${DATETIME}.log
+PKGLOG=${LOG_DIR}/${SCRIPT_NAME}_DRYRUN_${DATETIME}.log
+YUMUPGLOG=${LOG_DIR}/${SCRIPT_NAME}_YUM_UPDATE_${DATETIME}.log
+YUMINSTLOG=${LOG_DIR}/${SCRIPT_NAME}_YUM_INSTALL_${DATETIME}.log
+LIB_COMM=common_functions.lib
+BACK_UP_SCRIPT="$SCRIPT_DIR/OS_BACKUP.bsh"
+mws_ip=`cat /etc/.ks_serv_ip 2> /dev/null`
+$($TOUCH  /etc/mountpath)
+MOUNT_PATH=`cat /etc/mountpath 2> /dev/null`
+II_REPOFILE=ericINSTALLPATCH.repo
+UG_REPOFILE=temp_rhel_update.repo
+II_ONLY_TEMP_REPO="--disablerepo=* --enablerepo=ericINSTALLPATCH.repo"
+UG_ONLY_TEMP_REPO="--disablerepo=* --enablerepo=temp_rhel_update.repo"
+# misc
+KERNEL_VER=/var/tmp/kernel_update.txt
+# IP of MWS server
+KS_IP_ADDRESS=`$CAT /etc/.ks_serv_ip 2> /dev/null`
+
+# linux media location
+LIN_MEDIA_LOC=`$CAT /etc/.tmp_lin_media 2> /dev/null`
+$MKDIR -p /LIN_MEDIA
+$MOUNT ${KS_IP_ADDRESS}:${LIN_MEDIA_LOC} /LIN_MEDIA  >/dev/null 2>&1 
+
+ENIQ=`$CAT /LIN_MEDIA/kickstart/$($HOSTNAME)/$($HOSTNAME)_installation_param_details 2> /dev/null | $GREP "inst_type=" | $AWK -F= '{print $2}'`
+
+######################
+# Load common library
+######################
+[[ -f ${LIB_DIR}/${LIB_COMM} ]] && . ${LIB_DIR}/${LIB_COMM}
+[[ -f ${SCRIPT_DIR}/${LIB_COMM} ]] && . ${SCRIPT_DIR}/${LIB_COMM}
+[[ ! -f ${LIB_DIR}/${LIB_COMM} && ! -f ${SCRIPT_DIR}/${LIB_COMM} ]] && {
+        	$ECHO -e "\t\t\t\033[1;30;31m[ERROR]\033[0m\tNo library found!"
+        	exit 1
+        }
+
+return 0
+
+}
+
+usage() {
+#####################################
+# Function to output usage help
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0
+#####################################
+$CAT << EOF
+
+Usage:  ${SCRIPT_NAME} -<action> <target> [-h] [-d]
+
+        Where <action> can be one of:
+                -a (intall or upgrade) 
+                -x (clean up)
+        Optional
+        -w <whitelist file>
+        -h      Print help (this message).
+        -d      Enable debug mode (in conjunction with other options)
+
+        Example:
+                ${SCRIPT_NAME} -a install
+                ${SCRIPT_NAME} -a update
+                ${SCRIPT_NAME} -a upgrade
+                ${SCRIPT_NAME} -w <whitelistfile> -a install
+
+EOF
+return 0
+}
+
+#############################################
+#               			    #
+#function is to check the whitelist file.   # 
+#applicable for ENIQ patch installation     #
+#					    #	
+############################################# 	
+
+verifyProvidedWhitelist() {
+    if [ -f "$PROVIDED_WHITELIST" ]; then
+	WHITELIST_FILE=$PROVIDED_WHITELIST
+        logOut "INFO" "$FUNCNAME: Whitelist file [$WHITELIST_FILE] found."
+    else
+        logOut "INFO" "$FUNCNAME: Whitelist file [$WHITELIST_FILE] NOT found."
+        return 1
+    fi
+    return 0
+}
+
+############################################################
+#  function to install application patches in ENIQ server  #
+#						           # 		
+############################################################
+
+doWhitelistInstall()    {
+    repo_name=$1
+    YUMINSTALLTIME=$YUMDATE
+    logOut "INFO" "$FUNCNAME: Installing packages as per  Whitelist file."
+    logOut "DEBUG" "$FUNCNAME: About to run 'yum install $PKG'. \nplease wait......"
+	PKG=`cat $WHITELIST_FILE`
+	$YUM $repo_name -y install $PKG 2>&1 | $TEE  $YUMINSTLOG  
+        if [ ${PIPESTATUS[0]} != 0 ] ; then
+                return 1
+        fi
+    logOut "DEBUG" "$FUNCNAME: Whitelist install has finished."
+    return 0
+}
+
+###################################################
+#					          #		
+#  function to copy os backup tar file from client# 
+#  to MWS			                  #
+###################################################
+
+copy_backup_file()
+{
+	file=$1
+	HOSTNAME=$(hostname)
+	MWS_OSBACK_DIR="/net/$mws_ip/JUMP/OS_BACK_UP/$HOSTNAME"		
+        if [ ! -d $MWS_OSBACK_DIR ]; then
+		exitOut 2 "DIR is not found in the MWS/NFS server, please use <create_dir_MWS> script  to create client Dir structure in MWS/NFS for OS_BACK_UP"
+	fi
+	$(cp $file $MWS_OSBACK_DIR 2> /dev/null)
+	if [ $? -ne 0 ]; then
+		exitOut 2 "Issue is in copying of OS_BACK_UP  file to MWS/NFS server in  $MWS_OSBACK_DIR"
+	fi
+	logOut "INFO" "successfully copied the OS_BACK_UP to MWS/NFS server in $MWS_OSBACK_DIR"
+	 
+}
+##############################################
+#	function to take OS Backup           #
+#				             #	
+##############################################
+
+snapshot()
+{
+	$($RM -rf /opt/OS_CONF_BKP/*)
+	$($BASH $BACK_UP_SCRIPT > /dev/null 2>&1)
+	file=$($LS /opt/OS_CONF_BKP 2> /dev/null | head -1 | $GREP "tar")	
+	if [ -e /opt/OS_CONF_BKP/$file ]; then
+		copy_backup_file "/opt/OS_CONF_BKP/$file"
+		logOut "INFO" "OS backup  taken successfully"	
+	else
+		exitOut 2 "Issue in OS backup"
+	fi
+	snapshot_
+}
+
+##################################################
+#						 #
+#	function to take lvm snapshot of /root	 #
+#						 #
+##################################################
+snapshot_()
+{
+	VGS=/usr/sbin/vgs
+	#Device path of root "/" volume which needs to be snapshotted
+	ROOT_VG_VOLUME=$(df -h | $AWK 'FNR == 2 {print}' | $CUT -d " " -f1)
+	ROOT_VG_VOLUME_VAR=$(blkid | $GREP var | $CUT -d ":" -f1)
+	logOut "INFO" "Taking Snapshot of $ROOT_VG_VOLUME"
+
+	#Volume group name of root "/" partition
+	ROOT_VG=$(df -h | $AWK 'FNR == 2 {print}' | $CUT -d "/" -f4 | $CUT -d "-" -f1)
+
+	#Check the space size of volume group for root partition
+	VG_FREE_SIZE=`$VGS | $GREP $ROOT_VG | $AWK '{print $7}' | $CUT -d "<" -f2 | rev | $CUT -c 2- | rev`
+
+	GMT=`$VGS | $GREP $ROOT_VG | $AWK '{print $7}' | $CUT -d "<" -f2 | $CUT -d "." -f2`
+	GB=`echo -n $GMT | tail -c 1`
+	SNAPSIZE=`df -h | $AWK 'FNR == 2 {print}' | $AWK '{print $2}' | rev | $CUT -c 2- | rev`
+	G="GB"
+	ASSIGNSIZE=`echo $(echo $SNAPSIZE 100 | $AWK '{printf "%.2f", $1*20/$2}')`
+	res=`$AWK -v n1="$VG_FREE_SIZE" -v n2="$ASSIGNSIZE" 'BEGIN {printf  (n1>=n2?"true":"false")  }'`
+		cp -r /etc/lvm/lvm.conf /etc/lvm/lvm_backup.conf
+		sed -i 's/^[^#]*snapshot_autoextend_threshold = [0-9]*/snapshot_autoextend_threshold = 80/g' /etc/lvm/lvm.conf
+		systemctl restart lvm2-monitor	
+		if [[ ! $GB =~ [tg] ]]; then
+			exitOut 2 "Volume group do not have enough space, please do vgextend"
+		fi
+
+		#Create logical volume snapshot for root partition
+		res=`$AWK -v n1="$VG_FREE_SIZE" -v n2="$ASSIGNSIZE" 'BEGIN {printf  (n1>=n2?"true":"false")  }'`
+		if ! [ $res == "true" ]; then
+			logOut "INFO" "Volume group do not have enough space, please do vgextend"
+		else
+		       /sbin/lvcreate -L $ASSIGNSIZE$G -s -n rootsnap  $ROOT_VG_VOLUME
+		       /sbin/lvcreate -L $ASSIGNSIZE$G -s -n varsnap $ROOT_VG_VOLUME_VAR
+		fi
+}
+
+#########################################
+#					#
+#  function to check the disk space for #
+#  patch				#
+#########################################
+ 
+dry_run()
+{
+		repo_name=$1
+		if [ ! -f /etc/yum.conf ]; then
+			exitOut 2  "/etc/yum.conf file does not exist"
+		else
+			YUM_CONF=`$CAT /etc/yum.conf | $GREP gpgcheck`
+			if [ $? != 0 ]; then
+				logOut "INFO"  "gpgcheck is not present in the /etc/yum.conf file, adding gpgcheck in /etc/yum.conf file"
+				$SED -i '/obsoletes=1/a gpgcheck=0' /etc/yum.conf
+			else
+				if [ "${YUM_CONF}" == "gpgcheck=1" ]; then
+					$SED -i 's/gpgcheck=1/gpgcheck=0/g' /etc/yum.conf
+				fi
+			fi
+		fi
+		$YUM clean all >/dev/null 2>&1 ; $RM -rf /var/cache/yum
+		logOut "INFO"  "Executing dry_run"
+		$YUM $repo_name update -y --setopt tsflags=test  2>&1 | $TEE  $PKGLOG 
+        	if [ ${PIPESTATUS[0]} != 0 ] ; then
+                	exitOut 2 "There is some issue in dry_run. Check the log $PKGLOG"
+       		 fi
+	        logOut "INFO"  "Required space is available for patch update"
+
+}
+
+#########################################
+#  funtion for patch update             #
+#					#
+#########################################
+doUpdate()  {
+    repo_name=$1
+    YUMUPDATETIME=$YUMDATE
+    logOut "INFO" "Updating OS from patch media."
+    logOut "DEBUG" "$FUNCNAME: About to run 'yum update' please wait for a while."
+    $YUM $repo_name -y update 2>&1 | $TEE  $YUMUPGLOG 
+        if [ ${PIPESTATUS[0]} != 0 ] ; then
+                return 1
+        fi
+    `rpm -q --last kernel | $CUT -d " " -f1 | head  -1  | $GREP -Po '(\d+.*)' > $KERNEL_VER`    
+    logOut "DEBUG" "$FUNCNAME: 'yum update' run has finished."
+    return 0
+}
+
+#################################################
+#						#
+#  cleanup function to remove the patch repo	# 
+#  and to unmount lin media        		#
+#################################################
+
+cleanUp()       {
+    REPOFILE=$1
+    logOut "INFO" "$FUNCNAME: Cleaning up..."
+    $(> /etc/mountpath)
+    logOut "DEBUG" "$FUNCNAME: About to cleanup repository files & packages."
+    $( yum-config-manager --enable \* > /dev/null 2>&1 )
+    $(yum-config-manager --disable  /etc/yum.repos.d/$REPOFILE > /dev/null 2>&1)
+    $RM -f /etc/yum.repos.d/$REPOFILE > /dev/null 2>&1 
+    $RM -f /etc/yum.repos.d/$II_REPOFILE > /dev/null 2>&1
+    $RM -f /etc/yum.repos.d/$UG_REPOFILE > /dev/null 2>&1
+    umount /LIN_MEDIA 2> /dev/null
+    logOut "INFO" "Unmounting Linux media"
+    logOut "INFO" "Removed [/etc/yum.repos.d/$REPOFILE]"    
+    return 0
+}
+
+showVars() {
+#####################################
+# Function to show variables when debugging
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0
+#####################################
+
+$ECHO -e "VARS:\n==========================
+TARGET: $TARGET
+ACTION: $ACTION
+ARGS: $ARGS
+"
+return 0
+}
+
+processOptions() {
+#####################################
+# Function to process the CLI options
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      1 on warnings
+#                       0 success
+#                       exit on error
+#                       9 illegal termination
+#####################################
+logOut "DEBUG" "$FUNCNAME: running with ARGS:[$@]"
+
+local l_rt
+case "$ACTION" in
+        install)
+		$ECHO "###################RHEL PATCH UPDATE#############################################"
+
+                [[ -d ${MOUNT_PATH}/RHEL ]] ||  exitOut "2" "MOUNT path is not available/Mount path is empty"
+                [[ -f /etc/yum.repos.d/ericINSTALLPATCH.repo ]] || exitOut 2 "ericINSTALLPATCH.repo is not created please check"
+                if [ -z $mws_ip ]; then
+                       logOut "INFO" "This is server  installed with DVD method"
+                        ENIQ="mws"
+                fi 
+		if [ $ENIQ == "eniq" ]; then 
+			if [ ! -z $PROVIDED_WHITELIST ] ;then
+				logOut "INFO" "Installing and updating patch in ENIQ server"
+		                verifyProvidedWhitelist || exitOut 2 "Invalid whitelist file:[$PROVIDED_WHITELIST] provided"
+				doWhitelistInstall "$II_ONLY_TEMP_REPO" || exitOut 1 "supplementary install failed"
+                	        doUpdate "$II_ONLY_TEMP_REPO" || exitOut 1 "patch update failed"
+				cleanUp "II_REPOFILE"
+				exitOut 0 "Patch update completed successfully"
+			else
+				exitOut 2 "Issue with Whitelistfile"
+				cleanUp "II_REPOFILE"
+			fi
+		else
+			logOut "INFO" "updating patch in MWS server"
+                        doUpdate "$II_ONLY_TEMP_REPO" || exitOut 1 "patch update failed"	
+			cleanUp "II_REPOFILE"
+			exitOut 0 "Patch update completed successfully"
+           	fi
+		;;
+	upgrade)
+		[[ -d $MOUNT_PATH/Packages ]] ||  exitOut "2" "Cache path is not available/Cache  path is empty so please run the pre_upgrade_patchrhel.bsh and run upgrade_patchrhel.bsh script"
+                [[ -f /etc/yum.repos.d/temp_rhel_update.repo ]] || exitOut 2 " Issue in repo so please run the pre_upgrade_patchrhel.bsh and run upgrade_patchrhel.bsh script"
+
+                logOut "INFO" "Upgrading the server"
+                snapshot || logOut "INFO" "Please remove the snapshot if required"
+                dry_run "$UG_ONLY_TEMP_REPO" || exitOut 2 "No space for patch update"
+                doUpdate "$UG_ONLY_TEMP_REPO" || exitOut 1 "patch update failed"
+                cleanUp "$UG_REPOFILE"
+                echoOut "ECHO" "Please reboot the system to complete the upgrade"
+                exitOut 0 "Patch upgrade completed successfully"
+		;;
+	update)
+                [[ -d $MOUNT_PATH/RHEL ]] ||  exitOut "2" "cached  path is not available/Mount path is empty so please run the pre_upgrade_patchrhel.bsh and run upgrade_patchrhel.bsh script"
+                [[ -f /etc/yum.repos.d/temp_rhel_update.repo ]] || exitOut 2 " Issue in repo so please run the pre_upgrade_patchrhel.bsh and run upgrade_patchrhel.bsh script"
+
+		logOut "INFO" "Updating patch in server"
+                snapshot || logOut "INFO" "Please remove the snapshot if required"
+                dry_run "$UG_ONLY_TEMP_REPO" || exitOut 2 "No space for patch update"
+	        doUpdate "$UG_ONLY_TEMP_REPO" || exitOut 1 "patch update failed"
+		cleanUp "$UG_REPOFILE"
+                echoOut "ECHO" "Please reboot the system to complete the update"
+                exitOut 0 "Patch update completed successfully"
+                ;;
+        cleanup)
+		cleanUp "$UG_REPOFILE"
+                exitOut 0 "Clean up completed successfully"
+                ;;
+        *)
+                exitOut 1 "Unrecognised Action:[$ACTION]"
+                ;;
+esac
+logOut "DEBUG" "[$FUNCNAME:$LINENO] function should return before here."
+return 9
+}
+
+function trap_ctrlc ()
+{
+#    this function is called when Ctrl-C is sent
+    # perform cleanup here
+    echo "Ctrl-C caught...performing clean up"
+    logOut "INFO" "Doing cleanup please wait"
+    cleanUp "$UG_REPOFILE"   
+    logOut "WARNING" "Run pre_upgrade_patchrhel.bsh script to continue upgrade"
+ 
+    exitOut 2 "Exiting the Script after clean up due  to Ctrl-C caught"
+}
+##################
+#	         #	
+#       MAIN     # 
+#                #
+##################
+
+setVars
+trap trap_ctrlc  2
+$MKDIR -p "$LOG_DIR" || exitOut "1" "Unable to create $LOG_DIR"
+header "MAIN" "Host: $($HOSTNAME)" "$(datestamp 2)" "Command: \"${SCRIPT_NAME} $ARGS\""
+[[ -z "$ARGS" ]] && {
+        usage
+        exitOut 1 "No command line options supplied!"
+        }
+
+while getopts ":a:w:xdh" opt; do
+        case $opt in
+                a)
+                        ACTION="$OPTARG"
+                        ;;
+                x)
+                        ACTION="cleanup"
+                        ;;
+                w)
+                        PROVIDED_WHITELIST="$OPTARG"
+                        [[ -z $PROVIDED_WHITELIST ]] && exitOut 1 "No whitelist file specified on commandline."
+                        ;;
+                h)      # Print help and exitOut OK
+                        usage
+                        exitOut 0
+                        ;;
+                d)      # Get more output when running script
+                        DEBUG="y"
+                        ;;
+                \?)      # Hint to run usage
+                        usage
+                        exitOut 2 "Invalid option \"-$OPTARG\" supplied."
+                        ;;
+                :)      #capture options with missing args
+                        exitOut 2 "Missing argument for \"-$OPTARG\"\n\t\t\tRun \"${SCRIPT_NAME} -h\" for help\n"
+                        ;;
+        esac
+done
+
+# Should be no extra stuff on the command line
+shift $((${OPTIND} - 1))
+[[ $# -ne 0 ]] && exitOut 2  "Invalid command line option detected:[$@]\n\n$(usage)"
+if [[ -z "$ACTION" ]];  then
+        exitOut 2 "Missing command line option. Specify an Action.\n\n$(usage)"
+fi
+
+processOptions || {
+        logOut "DEBUG" "$(showVars)"
+        exitOut 2 "An error occurred while running \"$SCRIPT_NAME $ARGS\"."
+}

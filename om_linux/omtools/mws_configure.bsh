@@ -1,0 +1,1719 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2018 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : mws_configure.bsh
+# Purpose : This script will configure the MWS
+#
+# Usage   : See usage_msg()
+#
+# ********************************************************************
+#
+#   Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+GAWK=/usr/bin/gawk
+BASENAME=/usr/bin/basename
+BC=/usr/bin/bc
+CAT=/usr/bin/cat
+CD=/usr/bin/cd
+CHMOD=/usr/bin/chmod
+CHOWN=/usr/bin/chown
+CLEAR=/usr/bin/clear
+CMP=/usr/bin/cmp
+CP=/usr/bin/cp
+CPIO=/usr/bin/cpio
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DF=/usr/bin/df
+DIRNAME=/usr/bin/dirname
+DOMAINNAME=/usr/bin/domainname
+ECHO=/usr/bin/echo
+ED=/usr/bin/ed
+EGREP=/usr/bin/egrep
+EJECT=/usr/bin/eject
+ENV=/usr/bin/env
+EXPR=/usr/bin/expr
+FIND=/usr/bin/find
+FUSER=/usr/sbin/fuser
+GEGREP=/usr/sfw/bin/gegrep
+GETENT=/usr/bin/getent
+GREP=/usr/bin/grep
+GROUPADD=/usr/sbin/groupadd
+GTAR=/usr/sfw/bin/gtar
+GZCAT=/usr/bin/gzcat
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+IFCONFIG=/usr/sbin/ifconfig
+INIT=/usr/sbin/init
+IP=/usr/sbin/ip
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MKISOFS=/usr/bin/mkisofs
+MORE=/usr/bin/more
+MOUNT=/usr/bin/mount
+MV=/usr/bin/mv
+NETSTAT=/usr/bin/netstat
+NSLOOKUP=/usr/bin/nslookup
+NMCLI=/usr/bin/nmcli
+PING=/usr/sbin/ping
+PRINTF=/usr/bin/printf
+RPM=/usr/bin/rpm
+REBOOT=/usr/sbin/reboot
+RM=/usr/bin/rm
+RMDIR=/usr/bin/rmdir
+RCP=/usr/bin/rcp
+ROUTE=/usr/sbin/route
+RSH=/usr/bin/rsh
+SCP=/usr/bin/scp
+SED=/usr/bin/sed
+SHARE=/usr/sbin/share
+SHAREALL=/usr/sbin/shareall
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+SU=/usr/bin/su
+SYSTEMCTL=/usr/bin/systemctl
+SWAP=/usr/sbin/swap
+SYNC=/usr/sbin/sync
+TAIL=/usr/bin/tail
+TAR=/usr/sbin/tar
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TPUT=/usr/bin/tput
+TR=/usr/bin/tr
+UMOUNT=/usr/bin/umount
+UADMIN=/usr/sbin/uadmin
+UNAME=/usr/bin/uname
+UNSHARE=/usr/sbin/unshare
+USERADD=/usr/sbin/useradd
+YUM=/usr/bin/yum
+PACKAGES_INCLUDE=/var/tmp/packages2include
+$CAT > ${PACKAGES_INCLUDE} <<EOF
+bc
+bind
+bind-utils
+device-mapper-multipath
+device-mapper-multipath-libs
+dos2unix.x86_64
+dhcp
+httpd
+autofs
+isomd5sum.x86_64
+libaio
+lsof
+ltrace
+libXext-devel.x86_64
+libsss_autofs.x86_64
+net-tools
+nfs-utils
+ntp
+kernel-devel
+openssh-clients
+pexpect
+policycoreutils-python
+perl
+perl-Data-Dumper
+psmisc.x86_64
+rsync
+rpcbind
+screen
+strace
+sysstat
+sysfsutils
+tcpdump
+tftp
+xinetd
+tftp-server
+traceroute
+tcsh
+unzip
+vim-common
+vim-enhanced
+wget
+yum-utils
+tomcat
+EOF
+
+cat /etc/default/grub | sed -i 's/crashkernel=auto/crashkernel=128M/g' /etc/default/grub
+grub2-mkconfig -o /boot/grub2/grub.cfg
+
+uid=`blkid | grep var | awk '{print$2}'`
+echo "ext4 $uid" >> /etc/kdump.conf
+
+# ********************************************************************
+#
+#       Generic Functions
+#
+# ********************************************************************
+
+### Function: now ###
+# Arguments: none
+# Returns: date&time 2018-09-06-14:04:21
+now()
+{
+   $DATE +"%Y-%m-%d-%T"
+}
+
+### Function: abort_script ###
+#
+#   This function is called when the script is aborted.
+#   It can be aborted by a signal sent by the kernel such as CTRL-C
+#   or if a serious error is encountered during runtime.
+#
+# Arguments:
+#       $1 = Error message from part of program (Not always used)
+#       $2 = Other error than 1 (optional)
+# Return Values: none
+abort_script()
+{
+    local err_msg="$@"
+    log -p "ERROR: Script aborted... ${err_msg}"
+
+    exit 2
+}
+
+### Function: user_confirm ###
+#
+# Asks the user for confirmation (Yes/No).
+#
+# Arguments:
+#    $1 = Prompt text
+# Return Values:
+# Sets: ANS (Yes/No)
+user_confirm()
+{
+    local msg=$1 ans
+
+    if [ "$NO_CONFIRM" ]; then
+        ANS="Yes"
+        return
+    fi
+
+    while :; do
+        $ECHO -e "\n${msg}"
+        read ans
+        [ ! "${ans}" ] && continue
+
+        if [ "${ans}" == "Yes" -o "${ans}" == "No" ]; then
+            ANS="${ans}"
+            break
+        fi
+    done
+}
+
+### Function: log ###
+#
+#   Logs in-params with time stamp
+#   If no in-params, stdin will be logged
+#
+# Arguments:
+#    $1 = '-p' To also print the text to screen (optional)
+#    $1/2-n Text to log (optional)
+# Uses: LOGFILE
+# Returns:
+log()
+{
+   local scr=">>"
+   if [ "$1" = "-p" ]; then
+      scr="|$TEE -a"
+      shift
+   fi
+   if [[ -n "$1" ]]; then
+      eval $ECHO \"$(now) -- \$*\" ${scr} ${LOGFILE}
+   else
+      eval $ECHO \"$(now) -- \" ${scr} ${LOGFILE}
+      eval $CAT ${scr} ${LOGFILE}
+   fi
+}
+
+### Function: check_step ###
+#
+#   Checks if step file indicates we've already run command
+#
+# Arguments:
+#   $1 Step to check
+# Returns:
+#   0 - if already run step successfully
+#   1 - if not run step
+check_step()
+{
+    local step_check=$1 step_run
+    if [ -f ${STEPSFILE} ]; then
+        step_run=$($CAT ${STEPSFILE})
+        if [ ${step_run} -lt ${step_check} ]; then
+            return 1
+        else
+            return 0
+        fi
+    fi
+    return 1
+}
+
+### Function: done_step ###
+#
+#   Updates step file to say step has passed
+#
+# Arguments:
+#   $1 Step passed
+# Returns:
+#   None
+done_step()
+{
+    $ECHO $1 > ${STEPSFILE}
+    return 0
+}
+
+### Function: run_step ###
+#
+#   Runs command if not already run that step
+#
+# Arguments:
+#   $1 Step to check
+#   $2-$* Command to run
+# Returns:
+#   None
+run_step() {
+    local step_no=$1
+    shift
+    check_step ${step_no}
+    if [ $? -eq 0 ]; then
+        msg="Skipping Step ${step_no} as already ran successfully"
+        $ECHO -e "\n-> $msg"
+        log "$msg"
+    else
+        msg="Running Step ${step_no}"
+        $ECHO -e "\n-> $msg"
+        log "$msg"
+        $*
+        done_step ${step_no}
+    fi
+    return 0
+}
+
+### Function: do_cmd ###
+#
+#   Logs and executes specified command
+#   If cmd fails, script is aborted.
+#
+# Arguments:
+#   $1-n Command with params
+# Returns:
+do_cmd()
+{
+   log $*
+   $* || abort_script "Failed:" $*
+   return 0
+}
+
+### Function: doo ###
+#
+#   Logs and executes specified command
+#
+# Arguments:
+#   $1-n Command with params
+# Returns: Cmd return code returned
+doo()
+{
+   log $*
+   eval $*
+}
+
+### Function: no_intr_allowed ###
+#
+# Function just to return to a trap when interrupts are not allowed
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+no_intr_allowed()
+{
+:
+}
+
+# ********************************************************************
+#
+#       Help Functions
+#
+# ********************************************************************
+
+### Function: validate_prefix_length ###
+#
+# This function will check that an IP prefix length is valid format
+#
+# Arguments:
+#       $1 : IP prefix length to be validated
+# Return Values:
+#       0 if successful, 1 if not
+validate_prefix_len()
+{
+    local prefix=$1
+
+    if [[ ${prefix} =~ ^[0-9]{1,2}$ ]]; then
+        if [ ${prefix} -lt 0 -o ${prefix} -gt 32 ]; then
+            return 1
+        fi
+    else
+        return 1
+    fi
+    return 0
+}
+
+### Function: validate_ip ###
+#
+# This function will check that an IP address is valid format
+#
+# Arguments:
+#       $1 : IP address to be validated
+# Return Values:
+#       0 if successful, 1 if not
+validate_ip()
+{
+    local ip=$1 err_flag=0 orig_ifs ip_array array_length
+
+    if [[ ${ip} =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        orig_ifs_="${IFS}"
+        IFS='.'
+
+        ip_array=(${ip})
+        IFS="${orig_ifs}"
+
+        array_length="${#ip_array[@]}"
+
+        for (( i=0; i<${array_length}; i++ )); do
+            if [ ${ip_array[$i]} -lt 0 -o ${ip_array[$i]} -gt 255 ]; then
+                err_flag=1
+            fi
+        done
+    else
+        err_flag=1
+    fi
+    if [ ${err_flag} -eq 0 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+### Function: get_interface_values ###
+#
+# Gets interface values
+#
+# Arguments:
+#     #1: Interface to configure
+# Sets:
+#     IF_NIC, IF_IP, IF_PREFIX_LEN
+# Return Values: none
+get_interface_values()
+{
+    local if_type=$1 old_nic old_ip old_netmask new_netmask
+
+    get_param ${if_type}_NIC
+    old_nic=${PARAM_NAME}
+    get_param ${if_type}_IP
+    old_ip=${PARAM_NAME}
+    get_param ${if_type}_NETMASK
+    old_netmask=${PARAM_NAME}
+    IF_NIC=""
+    IF_IP=""
+    IF_PREFIX_LEN=""
+
+    while [[ -z "${IF_NIC}" ]]; do
+
+        user_confirm "Do you want to configure a ${if_type} VLAN (Yes/No):"
+        if [ "${ANS}" == "No" ]; then
+            return 0
+        fi
+
+        $ECHO -e "\nWhat is the ${if_type} VLAN NIC [${old_nic}]"
+        read IF_NIC
+        if [[ -z "${IF_NIC}" ]]; then
+            IF_NIC=${old_nic}
+        fi
+        while [[ -z "${IF_IP}" ]]; do
+            $ECHO -e "\nWhat is the ${if_type} VLAN IP [${old_ip}]"
+            read IF_IP
+            if [[ -z "${IF_IP}" ]]; then
+                IF_IP=${old_ip}
+            fi
+            validate_ip ${IF_IP}
+            if [ $? -ne 0 ]; then
+                $ECHO -e "\nInvalid IP entered"
+                IF_IP=""
+            fi
+        done
+        while [[ -z "${IF_PREFIX_LEN}" ]]; do
+            $ECHO -e "\nwhat is the ${if_type} VLAN IP Netmask [${old_netmask}]"
+            read new_netmask
+            if [[ -z "${new_netmask}" ]]; then
+                new_netmask=${old_netmask}
+            fi
+            validate_ip ${new_netmask}
+            if [ $? -ne 0 ]; then
+                $ECHO -e "\n Invalid Netmask entered"
+                IF_PREFIX_LEN=""
+            else
+                get_network_prefix_from_netmask $new_netmask
+            fi
+        done
+
+        user_confirm "Going to configure ${if_type} VLAN on NIC ${IF_NIC} with IP ${IF_IP}/${IF_PREFIX_LEN}, Are these values correct? (Yes/No)"
+        if [ "${ANS}" == "No" ]; then
+            IF_NIC=""
+            ANS=""
+            IF_IP=""
+            IF_PREFIX_LEN=""
+        fi
+    done
+    update_params ${if_type}_NIC ${IF_NIC}
+    update_params ${if_type}_IP ${IF_IP}
+    update_params ${if_type}_NETMASK ${new_netmask}
+
+    return 0
+}
+
+### Function: configure_interface ###
+#
+# Configures an interface
+#
+# Arguments:
+#     #1: Interface to configure
+# Uses:
+#     IF_NIC, IF_IP, IF_PREFIX_LEN
+# Return Values: none
+configure_interface()
+{
+    local if_type=$1
+    get_interface_values ${if_type}
+
+    if [[ -z "${IF_NIC}" ]]; then
+        $ECHO -e "\n--> Skip ${if_type} VLAN configuration as requested"
+        return 0
+    fi
+
+    $ECHO -e "\n--> Configuring ${if_type} VLAN interface with ${IF_NIC} ${IF_IP}/${IF_PREFIX_LEN}"
+        IP_ADDR=`$IP addr show ${IF_NIC}|grep "inet "|$AWK '{print $2}'`
+
+        if [ ! -z $IP_ADDR ]; then
+        user_confirm "${IF_NIC} exists already, do you wish to continue? (Yes/No):"
+        if [ "${ANS}" == "No" ]; then
+            abort_script "Exiting as interface ${IF_NIC} already exists"
+        fi
+    fi
+
+    if [ -f /etc/sysconfig/network-scripts/ifcfg-${IF_NIC} ]; then
+             $CP /etc/sysconfig/network-scripts/ifcfg-${IF_NIC} /etc/sysconfig/network-scripts/ifcfg-${IF_NIC}_$(date "+%Y.%m.%d-%H.%M.%S")
+    fi
+
+     do_cmd $NMCLI con mod  ${IF_NIC}  ipv4.method "manual" ipv4.addresses ${IF_IP}/${IF_PREFIX_LEN} connection.autoconnect yes
+     $GREP -v IPV6 /etc/sysconfig/network-scripts/ifcfg-${IF_NIC} > /tmp/ifcfg-${IF_NIC}
+     $RM -rf /etc/sysconfig/network-scripts/ifcfg-${IF_NIC}
+         $CP /tmp/ifcfg-${IF_NIC} /etc/sysconfig/network-scripts/
+         $SYSTEMCTL restart network
+         sleep 5
+
+    # Check they are there
+    do_cmd  $IP addr show ${IF_NIC}| grep "inet " | $AWK '{print $2}'
+
+    $ECHO -e "\n--> Successfully configured ${if_type} VLAN interface on ${IF_NIC}:"
+    $IP addr show ${IF_NIC}
+
+    return 0
+}
+
+
+
+### Function: get_network_addr ###
+#
+# Get the network address of the client
+#
+# Arguments:
+#   $1 : Client Netmask
+# Sets:
+#   IF_PREFIX_LEN
+get_network_prefix_from_netmask()
+{
+
+    local nm1 nm2 nm3 nm4
+    local nm1_bin nm2_bin nm3_bin nm4_bin
+
+    # split out the parts of the netmask
+    nm1=`$EXPR $1 : '\([0-9]*\)\..*'`
+    nm2=`$EXPR $1 : '[0-9]*\.\([0-9]*\)\..*'`
+    nm3=`$EXPR $1 : '[0-9]*\.[0-9]*\.\([0-9]*\)\..*'`
+    nm4=`$EXPR $1 : '[0-9]*\.[0-9]*\.[0-9]*\.\([0-9]*\)'`
+
+    # Convert to binary
+
+    nm1_bin=`echo "obase=2;$nm1" | bc`
+    nm2_bin=`echo "obase=2;$nm2" | bc`
+    nm3_bin=`echo "obase=2;$nm3" | bc`
+    nm4_bin=`echo "obase=2;$nm4" | bc`
+
+    prefix="$nm1_bin$nm2_bin$nm3_bin$nm4_bin"
+
+    # Count number of 1's, ($AWK -1)
+    num=`echo $prefix | $AWK 'BEGIN{FS="1"} {print NF-1}'`
+
+    IF_PREFIX_LEN=${num}
+
+}
+
+### Function: install_packages###
+#
+# Installs/Uninstalls additional packages
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+#install_packages()
+#{
+#    local pkg_name uar_filename line words installed
+#    uar_filename="${OM_MEDIA_LOC}/omtools/mws_uar_pkg_list"
+#    while read line; do
+#        words=($line)
+#        pkg_name=${words[1]}
+#        $PKG info -q ${pkg_name}
+#        installed=$?
+#        if [ "${words[0]}" == "install" ]; then
+#            if [ $installed -ne 0 ]; then
+#                $ECHO -e "\n--> Installing ${pkg_name}"
+#                do_cmd $RPM -ivh ${pkg_name}
+#                do_cmd $RPM -q ${pkg_name}
+#            else
+#                $ECHO -e "\n--> ${pkg_name} already installed"
+#            fi
+#        elif [ "${words[0]}" == "uninstall" ]; then
+#            if [ $installed -ne 1 ]; then
+#                $ECHO -e "\n--> Uninstalling ${pkg_name}"
+#                do_cmd $RPM -e ${pkg_name}
+#                $RPM -q ${pkg_name}
+#                if [ $? -eq 0 ]; then
+#                    abort_script "Failed to uninstall ${pkg_name}"
+#                fi
+#            else
+#                $ECHO -e "\n--> ${pkg_name} already uninstalled"
+#            fi
+#        else
+#            abort_script "Invalid option ${words[0]} in ${uar_filename}"
+#        fi
+#    done < ${uar_filename}
+#    return 0
+#}
+
+### Function: update_packages ###
+#
+# Performs package update
+#
+# Arguments: None
+# Uses: None
+# Return Values: none
+update_packages()
+{
+    $YUM update > /dev/null
+    res=$?
+    if [ $res -eq 4 ]; then
+        $ECHO -e "\n--> No package update required"
+    else
+        $ECHO -e "\n--> Updating packages"
+        do_cmd $YUM update
+    fi
+
+    return 0
+}
+
+### Function: do_reboot ###
+#
+# Performs reboot, as might be required by package update
+#
+# Arguments: None
+# Uses: None
+# Return Values: none
+do_reboot()
+{
+    $ECHO -e "\nMWS Configuration completed successfully."
+    $ECHO -e "\nPlease perform verification steps after reboot has completed."
+    user_confirm "Reboot the server now to apply the changes (Yes/No)?"
+    if [ "$ANS" == "Yes" ]; then
+       log "MWS Configuration completed successfully."
+       shutdown -r +1
+    else
+        $ECHO -e "\nPlease reboot MWS to complete configuration"
+    fi
+    return 0
+}
+
+### Function: remove_dhcpd_conf ###
+#
+#To remove /etc/dhcp/dhcpd.conf file if exists only
+# Arguments: None
+# Uses: /etc/dhcp/dhcpd.conf
+# Return Values: none
+remove_dhcpd_conf() {
+
+dhcp_conf_file="/etc/dhcp/dhcpd.conf"
+        if [ -f ${dhcp_conf_file} ] ; then
+                $ECHO "Removing old dhcp conf file"
+                $RM -rf ${dhcp_conf_file}
+        fi
+}
+
+### Function: wait_service_state ###
+#
+# Waits up to 10 minutes for service to get to desired state
+#
+# Arguments:
+#     1: service to check
+#     2: state waiting for
+# Uses: None
+wait_service_state() {
+    local svc_name=$1 svc_state=$2 completed=1 attempts=0
+    while [ $completed -ne 0 ] && [ $attempts -lt 60 ]; do
+        $SVCS ${svc_name} | grep $svc_state > /dev/null 2>&1
+        completed=$?
+        if [ $completed -ne 0 ]; then
+            sleep 10
+            attempts=$((attempts+1))
+        fi
+    done
+    return $completed
+}
+
+
+
+### Function: update_loghost ###
+#
+# Updates loghost to point to IP address not localhost in /etc/inet/hosts
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+update_loghost() {
+    local hostip _hostname_
+    _hostname_=`hostname | $GAWK -F. '{print $1}'`
+
+    $ECHO -e "-> Ensuring loghost is on our IP address"
+    #hostip=`$CAT /etc/hosts | $TAIL -1 | $AWK '{print $1}'`
+    hostip=`$NSLOOKUP ${_hostname_} | $GREP "Address" | $TAIL -1 | $AWK '{print $2}'`
+    $CAT /etc/hosts | $SED '$d' > /host
+    $CAT /host | $SED 's/loghost//g' > /etc/hosts
+    $ECHO -e "${hostip}\t${_hostname_}\tloghost" >> /etc/hosts
+    $RM -rf /host
+    return 0
+}
+
+
+### Function: update_nsswitch ###
+#
+# Updates /etc/nsswitch.conf by editing invalid myhostname entry
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+update_nsswitch() {
+
+nsconf_file=`cat /etc/nsswitch.conf | grep myhostname`
+res=$?
+if [ ${res} -eq 0  ] ; then
+        $ECHO $nsconf_file | sed -i 's/hosts:      files dns myhostname/hosts:      files dns/' /etc/nsswitch.conf
+        if [ $? -ne 0 ] ; then
+                abort_script "Failed to update /etc/nsswitch.conf"
+        else
+                $ECHO "/etc/nsswitch.conf updated successfully"
+        fi
+else
+        $ECHO "No update required for /etc/nsswitch.conf"
+fi
+}
+
+
+### Function: do_disable_multipath ###
+#
+# Disables MPXIO
+#
+# Arguments: None
+# Uses:
+# Return Values: none
+do_disable_mpath() {
+    $ECHO -e "\n--> Disabling Multi-pathing"
+    if [ "$SYSTEMCTL is-active multipathd.service" == "active" ]; then
+                echo "--> multipathd.service service is active"
+                $SYSTEMCTL stop multipathd.service
+                $SLEEP 2
+                $SYSTEMCTL disable multipathd.service
+                if [ $? -eq 0 ] ; then
+                        echo "--> multipathd.service is disabled"
+                else
+                        echo "--> Failed to disable multipathd.service"
+                        return 1
+                fi
+    else
+        echo "--> multipathd.service service already inactive"
+        return 0
+    fi
+
+}
+
+### Function: verify_jump###
+#
+# Verifies and shares /JUMP filesystem
+#
+# Arguments: None
+# Uses:  JUMP_LOC
+# Return Values: none
+verify_jump()
+{
+     JUMP_LOC="/JUMP"
+    df ${JUMP_LOC} >/dev/null
+
+    if [ $? -eq 0 ]; then
+        echo -e  "\n--> ${JUMP_LOC} exists"
+        if [ -e /etc/exports ]; then
+                if  grep -Fq "/JUMP" /etc/exports
+                then
+                        echo "/JUMP is present in /etc/exports file"
+                else
+                        echo "/JUMP *(rw)" >> /etc/exports
+                fi
+        else
+                cat > /etc/exports << EOF
+/JUMP *(rw)
+EOF
+        echo "Successfully created an entry in /etc/exports!"
+
+        fi
+
+        if [ -f /etc/fstab ]; then
+                if grep -Fq "/JUMP" /etc/fstab
+                then
+                        echo "/JUMP is present in /etc/fstab"
+                else
+                        abort_script "An entry for /JUMP is not present /etc/fstab"
+                fi
+        else
+                abort_script "/etc/fstab doesn't exist"
+        fi
+
+     else
+        abort_script "/JUMP doesn't exist.Please create it manually!"
+     fi
+}
+
+
+### Function: install_rpm_packages###
+#
+# Install the rpms after RHEL install
+#
+# Arguments: None
+# Return Values: none
+
+install_rpm_packages()
+{
+    local pkg_name line
+    _filename="${PACKAGES_INCLUDE}"
+    _reponame="/etc/yum.repos.d/ericRHEL.repo"
+    if [ -f ${_filename} ]; then
+            while read line; do
+                pkg_name=$line
+                $RPM -qi ${pkg_name} >/dev/null 2>&1
+                installed=$?
+                if [ $installed -ne 0 ]; then
+                        $ECHO -e "\n--> Installing ${pkg_name}"
+                        do_cmd $YUM -y install ${pkg_name}
+                        do_cmd $RPM -qi ${pkg_name} > /dev/null
+                else
+                    $ECHO -e "\n--> ${pkg_name} already installed"
+                fi
+            done < ${_filename}
+    else
+
+        abort_script "Failed to install ${pkg_name}"
+    fi
+    return 0
+}
+
+
+### Function: cache_rhel###
+#
+# Caches RHEL software
+#
+# Arguments: None
+# Uses: RHEL_MEDIA_LOC
+# Sets: MEDIA_LOC
+# Return Values: none
+
+cache_rhel()
+{
+    local rhel_msg cached_rs shipment
+    MEDIA_LOC=$($AWK -F= '/RHEL_MEDIA_LOC/ {print $2}' ${PARAMSFILE})
+    $ECHO -e "\n--> Caching Kickstart media"
+    if [[ -z "${MEDIA_LOC}" ]]; then
+        abort_script "Failed to determine Kickstart media cache path"
+    fi
+    rhel_msg=$(${KICKSTARTDIR}/manage_linux_kickstart.bsh -a add -k .linux_boot_media -N -p ${MEDIA_LOC})
+    if [ $? -eq 0 ]; then
+        $ECHO -e "\n--> Successfully cached Kickstart media \n"
+    else
+        cached_rs='.*is already installed in[[:space:]]/JUMP/LIN_MEDIA/(.*)'
+
+        if [[ ${rhel_msg} =~ ${cached_rs} ]]; then
+           shipment=${BASH_REMATCH[1]}
+           $ECHO -e "\n--> Media already cached at /JUMP/LIN_MEDIA/${shipment}"
+        else
+            abort_script "Failed to cache media  ${rhel_msg}"
+        fi
+    fi
+    $UMOUNT -f ${MEDIA_LOC}
+    if [ $? -eq 0 ]; then
+      $ECHO -e "\n--> Successfully unmounted Kickstart media\n"
+    else
+      abort_script "Failed to unmount rhel kickstart iso media  ${rhel_msg}"
+    fi
+
+    return 0
+}
+
+### Function: cache_patch_rhel###
+#
+# Caches RHEL software
+#
+# Arguments: None
+# Uses: INSTALL_PATCH_RHEL_MEDIA_LOC
+# Sets: MEDIA_LOC
+# Return Values: none
+
+cache_patch_rhel()
+{
+    local rhel_msg cached_rs shipment
+    PATCH_MEDIA_LOC=$($AWK -F= '/RHEL_INSTALL_PATCH_MEDIA_LOC/ {print $2}' ${PARAMSFILE})
+    $ECHO -e "\n--> Caching Patch media"
+    if [[ -z "${PATCH_MEDIA_LOC}" ]]; then
+        abort_script "Failed to determine RHEL Patch media cache path"
+    fi
+    rhel_msg=$(${KICKSTARTDIR}/manage_install_patch_kickstart.bsh -a add -k .patch_boot_media -N -p ${PATCH_MEDIA_LOC})
+    if [ $? -eq 0 ]; then
+        $ECHO -e "\n--> Successfully cached RHEL Patch media \n"
+    else
+        cached_rs='.*is already installed in[[:space:]]/JUMP/INSTALL_PATCH_MEDIA/(.*)'
+
+        if [[ ${rhel_msg} =~ ${cached_rs} ]]; then
+           shipment=${BASH_REMATCH[1]}
+           $ECHO -e "\n--> Media already cached at /JUMP/INSTALL_PATCH_MEDIA/${shipment}"
+        else
+            abort_script "Failed to cache patch media  ${rhel_msg}"
+        fi
+    fi
+    $UMOUNT -f ${PATCH_MEDIA_LOC}
+    if [ $? -eq 0 ]; then
+      $ECHO -e "\n--> Successfully unmounted rhel patch media\n"
+    else
+      abort_script "Failed to unmount rhel patch iso media  ${rhel_msg}"
+    fi
+
+   create_install_patch_repos
+
+  return 0
+}
+
+### Function: get_iso_mount###
+#
+# Mounts the RHEL ISO and creates a temporary  ericRHEL repo
+#
+# Arguments: None
+# Uses: RHEL_MEDIA_LOC
+# Return Values: none
+
+get_iso_mount()
+{
+    local temp_mount_point="/tmp/temp_linux_mount.$$"
+    local file dia_err var value media_file
+    PATH_TO_ISO=$1
+    do_cmd $MKDIR -p ${temp_mount_point}
+    doo umount ${PATH_TO_ISO} >/dev/null 2>&1
+    do_cmd $MOUNT -o loop ${PATH_TO_ISO} ${temp_mount_point} >/dev/null 2>&1
+    # Build ericRHEL containing all repos for this  system, where it will be run
+      if [ -f /etc/yum.repos.d/ericRHEL.repo ]; then
+         $RM -rf /etc/yum.repos.d/ericRHEL.repo
+      fi
+       $ECHO "[ericRHEL]" >> /etc/yum.repos.d/ericRHEL.repo
+       $ECHO "name=Ericsson RHEL" >> /etc/yum.repos.d/ericRHEL.repo
+       $ECHO "baseurl=file://${temp_mount_point}" >> /etc/yum.repos.d/ericRHEL.repo
+       $ECHO "enabled=1" >> /etc/yum.repos.d/ericRHEL.repo
+       $ECHO "gpgcheck=0" >> /etc/yum.repos.d/ericRHEL.repo
+
+      update_params RHEL_MEDIA_LOC ${temp_mount_point}
+
+
+}
+
+
+### Function: get_patch_iso_mount###
+#
+# Mounts the RHEL ISO and creates a temporary  ericRHEL repo
+#
+# Arguments: None
+# Uses: RHEL_MEDIA_LOC
+# Return Values: none
+
+get_patch_iso_mount()
+{
+    local temp_patch_mount_point="/temp_patch_mount"
+    local file dia_err var value media_file
+    PATH_TO_PATCH_ISO=$1
+    do_cmd $MKDIR -p ${temp_patch_mount_point}
+    doo umount ${PATH_TO_PATCH_ISO} >/dev/null 2>&1
+    do_cmd $MOUNT -o loop ${PATH_TO_PATCH_ISO} ${temp_patch_mount_point} >/dev/null 2>&1
+        if [ $? -eq 0 ] ; then
+                $ECHO -e "\n Successfuly Mounted patch media"
+        else
+                abort_script " Mounting patch media failed... verify"
+        fi
+
+    # Build ericpatch RHEL containing all repos for this  system, where it will be run
+       #$ECHO "[ericINSTALLPATCH.repo]" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+       #$ECHO "name=Ericsson INSTALLPATCH " >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+       #$ECHO "baseurl=file://${temp_patch_mount_point}" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+       #$ECHO "enabled=1" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+       #$ECHO "gpgcheck=0" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+
+      update_params RHEL_INSTALL_PATCH_MEDIA_LOC ${temp_patch_mount_point}
+      cache_patch_rhel
+
+
+}
+
+### Function: create_install_patch_repos###
+#
+# Creates a ericRHEL repo after caching of RHEL kickstart Media
+#
+# Arguments: None
+# Uses: RHEL_INSTALL_PATCH_MEDIA_LOC
+# Return Values: none
+
+create_install_patch_repos()
+{
+
+   $RM -rf /var/cache/yum/
+   # Create REHL Repo
+   KSPATCHDIR=`$LS /JUMP/INSTALL_PATCH_MEDIA |$TAIL -1|$AWK '{print $NF}'`
+   if [[ ! -z "${KSPATCHDIR}" ]]; then
+      $ECHO -e "\n Creating RHEL INSTALL PATCH kickstart Repo"
+      $RM -rf /etc/yum.repos.d/ericINSTALLPATCH.repo
+      RHEL_PACK_PATH=$($LS /JUMP/INSTALL_PATCH_MEDIA/${KSPATCHDIR}/RHEL | $GREP "RHEL[^_]" 2> /dev/null )
+      $ECHO "[ericINSTALLPATCH.repo]" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+      $ECHO "name=Ericsson INSTALLPATCH" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+      $ECHO "baseurl=file:///JUMP/INSTALL_PATCH_MEDIA/${KSPATCHDIR}/RHEL/${RHEL_PACK_PATH}" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+      $ECHO "enabled=1" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+      $ECHO "gpgcheck=0" >> /etc/yum.repos.d/ericINSTALLPATCH.repo
+
+      $ECHO -e "\n Sucessfully created INSTALL PATCH RHEL kickstart Repo"
+   else
+      abort_script "Failed to create INSTALL PATCH RHEL kickstart Repo ${rhel_msg}"
+   fi
+   
+   install_patches
+   if [ $? -eq 0 ] ; then
+	$ECHO -e "\n Sucessfully INSTALLED RHEL PATCHES"
+   else
+	abort_script "Failed to perform RHEL PATCHES INSTALLATION"
+   fi
+
+
+}
+
+### Function: install_patches###
+#
+#Installation of RHEL patches 
+#
+#
+#Arguments: None
+#Return Values: none
+
+install_patches()
+{
+UPGRADE_RHEL_SCRIPT=${OM_MEDIA_LOC}/patch/bin/upgrade_patchrhel.bsh 
+PATCH_LOG_PATH="/var/ericsson/log/patch"
+$ECHO "/JUMP/INSTALL_PATCH_MEDIA/${KSPATCHDIR}" > /etc/mountpath
+
+# Check that the patch update script exists
+if [ ! -f ${UPGRADE_RHEL_SCRIPT} ]; then
+    abort_script "Failed to find patch update script ${UPGRADE_RHEL_SCRIPT}"
+
+fi
+
+#Execution of update patch script for updating RHEL patches
+	$ECHO "Installing Patches on MWS..."
+        ${UPGRADE_RHEL_SCRIPT} -a install 
+        if [ $? -eq 0 ] ; then
+		$ECHO -e "\n Sucessfully Completed patch installation script"	
+	else
+               abort_script "RHEL patch update failed.... please refer $PATCH_LOG_PATH" | $TEE -a ${LOGFILE}
+        fi
+
+}
+
+### Function: create_repos###
+#
+# Creates a ericRHEL repo after caching of RHEL kickstart Media
+#
+# Arguments: None
+# Uses: RHEL_MEDIA_LOC
+# Return Values: none
+
+create_repos()
+{
+   # Create REHL Repo
+   KSDIR=`$LS /JUMP/LIN_MEDIA |$TAIL -1|$AWK '{print $NF}'`
+   if [[ ! -z "${KSDIR}" ]]; then
+      $ECHO -e "\n Creating RHEL kickstart Repo"
+      $RM -rf /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "[ericRHEL]" >> /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "name=Ericsson RHEL" >> /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "baseurl=file:///JUMP/LIN_MEDIA/${KSDIR}" >> /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "enabled=1" >> /etc/yum.repos.d/ericRHEL.repo
+      $ECHO "gpgcheck=0" >> /etc/yum.repos.d/ericRHEL.repo
+
+      $ECHO -e "\n Sucessfully created  RHEL kickstart Repo"
+   else
+      abort_script "Failed to create RHEL kickstart Repo ${rhel_msg}"
+   fi
+
+}
+
+### Function: get_rhel_media###
+#
+# Get the RHEL Media location and it mounts the RHEL Media
+#
+# Arguments: None
+# Return Values: none
+
+get_rhel_media()
+{
+    $ECHO -e "\nPlease enter location of RHEL ISO media: "
+    read RHEL_MEDIA_LOC
+    if [[ -z "${RHEL_MEDIA_LOC}" ]]; then
+      while :; do
+            $ECHO -e "\nPlease enter valid location of RHEL ISO: "
+            read  RHEL_MEDIA_LOC
+            [ ! "${RHEL_MEDIA_LOC}" ] && continue
+            break
+      done
+
+    fi
+    [ -f "${RHEL_MEDIA_LOC}" ] || abort_script "ISO media location doesn't contain"
+
+    get_iso_mount ${RHEL_MEDIA_LOC}
+}
+
+
+
+# Function: verify_patch_media###
+#
+# Get the RHEL Media location and it mounts the RHEL Media
+#
+# Arguments: None
+# Return Values: none
+verify_patch_media()
+{
+
+if [ ! -d /JUMP/OS_BACK_UP ] ; then
+	$MKDIR -p /JUMP/OS_BACK_UP 
+else
+	$ECHO "OS_BACK_UP directory already exists"
+fi
+
+
+if [ -f /tmp/.reboot_check ] ; then
+
+        $ECHO "Patch update is completed as part of generic_finish"
+        $ECHO "Patch update is skipped"
+else
+        get_install_patch_media
+fi
+
+}
+
+### Function: get_install_patch_media###
+#
+# Get the RHEL Media location and it mounts the RHEL Media
+#
+# Arguments: None
+# Return Values: none
+
+get_install_patch_media()
+{
+echo "******************************************"
+    $ECHO -e "\nPlease enter location of RHEL PATCH ISO media: "
+    read INSTALL_PATCH_MEDIA_LOC
+    if [[ -z "${INSTALL_PATCH_MEDIA_LOC}" ]]; then
+      while :; do
+            $ECHO -e "\nPlease enter valid location of RHEL PATCH ISO: "
+            read INSTALL_PATCH_MEDIA_LOC 
+            [ ! "${INSTALL_PATCH_MEDIA_LOC}" ] && continue
+            break
+      done
+
+    fi
+    [ -f "${INSTALL_PATCH_MEDIA_LOC}" ] || abort_script "RHEL PATCH ISO media location doesn't contain"
+
+        get_patch_iso_mount ${INSTALL_PATCH_MEDIA_LOC}
+
+}
+
+## Function: cache_om###
+#
+# Caches OM software
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Sets: MEDIA_DIR
+# Return Values: none
+cache_om()
+{
+    local om_msg cached_re release shipment
+    $ECHO -e "\n--> Caching OM media"
+    if [[ -z "${MEDIA_DIR}" ]]; then
+        abort_script "Failed to determine OM media cache path"
+    fi
+    om_msg=$(${KICKSTARTDIR}/manage_nfs_media.bsh -a add -m om_linux -N -p ${OM_MEDIA_LOC})
+    if [ $? -eq 0 ]; then
+        $ECHO -e "\n--> Successfully cached media\n"
+    else
+        cached_re='.*is already installed in[[:space:]]/JUMP/OM_LINUX_MEDIA/(.*)/(.*)'
+
+        if [[ ${om_msg} =~ ${cached_re} ]]; then
+            release=${BASH_REMATCH[1]}
+            shipment=${BASH_REMATCH[2]}
+            $ECHO -e "\n--> Media already cached at ${release}/${shipment}"
+        else
+            abort_script "Failed to cache media  ${om_msg}"
+        fi
+    fi
+
+    return 0
+}
+
+
+
+
+### Function: remove_ERICkickstart###
+#
+# Removes ERICjump if its installed, as we have a new product version number
+# so upgrade_om might not upgrade if an older package is installed
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+remove_ERICkickstart()
+{
+pkg_status=`$RPM -qa ERICkickstart`
+
+    if [ ! -z ${pkg_status} ]; then
+        $ECHO -e "\n--> Uninstalling ERICkickstart"
+        do_cmd $RPM -e ERICkickstart-* >/dev/null
+    else
+        $ECHO -e "\n--> No ERICkickstart to uninstall"
+    fi
+    return 0
+}
+
+### Function: upgrade_om###
+#
+# Installs additional software using upgrade_om
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+upgrade_om()
+{
+    $ECHO -e "\n--> Installing additional software"
+    $RM -rf /var/cache/yum
+    yum-config-manager --disable \* > /dev/null 2>&1
+    $RM -rf /var/cache/yum
+    yum-config-manager --enable ericEMC > /dev/null 2>&1
+    $RM -rf /var/cache/yum
+    do_cmd ${OM_MEDIA_LOC}/omtools/upgrade_om.bsh -p ${OM_MEDIA_LOC} -a mws
+
+    return 0
+
+}
+
+### Function: kickstart###
+#
+# Installs ERICkickstart package
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+install_ERICkickstart()
+{
+    local kickstartmsg pkg_log
+    pkg_log=/var/tmp/.mws_configure_kickstart.log
+    $ECHO -e "\n--> Installing ERICkickstart package"
+    $RPM -ivh ${OM_MEDIA_LOC}/omtools/eric_kickstart/ERICkickstart* |  $TEE ${pkg_log}
+    if [ $? -ne 0 ]; then
+        # Check if says because no updates needed
+        kickstartmsg=$($CAT ${pkg_log})
+        $RM ${pkg_log}
+        if [[ ${kickstartmsg} == *"is already installed"* ]]; then
+            $ECHO "ERICkickstart pkg reported no updates required"
+        else
+            abort_script "Failed to install ERICkickstart\n${kickstartmsg}"
+        fi
+    else
+        $ECHO -e "\n--> Successfully installed ERICkickstart"
+        $RM ${pkg_log}
+    fi
+
+
+    return 0
+}
+
+### Function: enable_services ###
+#
+# Enables/Disables additional services
+#
+# Arguments: None
+# Uses: OM_MEDIA_LOC
+# Return Values: none
+
+enable_services()
+{
+    local words line service uar_filename
+    uar_filename="${OM_MEDIA_LOC}/omtools/mws_svc_list"
+
+        while read line; do
+        service=($line)
+        active_status=`systemctl status ${service} | sed -n '/Active:/p' | cut -d ':' -f 2 | cut -d ' ' -f 2`
+        enabled_status=`systemctl status ${service} | sed -n '/Loaded:/p' | cut -d ';' -f 2 | cut -d ' ' -f 2`
+
+        if [ ${active_status} == "inactive" ] && [ ${enabled_status} == "disabled" ]; then
+                do_cmd systemctl start ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+                do_cmd systemctl enable ${service}
+                wait_enabled_state ${service} "enabled"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get enabled"
+                fi
+        elif [ ${active_status} == "inactive" ] && [ ${enabled_status} == "enabled" ]; then
+                do_cmd systemctl disable ${service}
+                do_cmd systemctl start ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+
+                do_cmd systemctl enable ${service}
+                wait_enabled_state ${service} "enabled"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get enabled"
+                fi
+        elif [ ${active_status} == "active" ] && [ ${enabled_status} == "disabled" ]; then
+                do_cmd systemctl restart ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+
+                do_cmd systemctl enable ${service}
+                wait_enabled_state ${service} "enabled"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get enabled"
+                fi
+        elif [ ${active_status} == "active" ] && [ ${enabled_status} == "enabled" ]; then
+                do_cmd systemctl restart ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+        elif [ ${active_status} == "inactive" ]; then
+                do_cmd systemctl start ${service}
+                wait_active_state ${service} "active"
+                if [ $? -ne 0 ]; then
+                        abort_script "${service} failed to get activated"
+                fi
+
+        else
+                if [ ${enabled_status} == "indirect" ] && [ ${service} == "tftp" ]; then
+                        if [ ${active_status} == "active" ]; then
+                                continue;
+                        else
+                                do_cmd systemctl restart ${service}
+                                wait_active_state ${service} "active"
+                                if [ $? -ne 0 ]; then
+                                        abort_script "${service} failed to get activated"
+                                fi
+
+                        fi
+
+                else
+                        echo "Unknown state for ${service} service."
+                fi
+        fi
+        done < ${uar_filename}
+}
+
+### Function: wait_active_state ###
+#
+# Waits up to 10 minutes for service to get to desired state
+#
+# Arguments:
+#     1: service to check
+#     2: state waiting for
+# Uses: None
+wait_active_state() {
+    local service=$1 svc_state=$2 completed=1 attempts=0
+    while [ $completed -ne 0 ] && [ $attempts -lt 60 ]; do
+        systemctl status ${service} | sed -n '/Active:/p' | grep "active"> /dev/null 2>&1
+        completed=$?
+        if [ $completed -ne 0 ]; then
+            sleep 10
+            attempts=$((attempts+1))
+        fi
+    done
+    return $completed
+}
+
+### Function: wait_enabled_state ###
+#
+# Waits up to 10 minutes for service to get to desired state
+#
+# Arguments:
+#     1: service to check
+#     2: state waiting for
+# Uses: None
+wait_enabled_state() {
+    local service=$1 svc_state=$2 completed=1 attempts=0
+    while [ $completed -ne 0 ] && [ $attempts -lt 60 ]; do
+        systemctl status ${service} | sed -n '/Loaded:/p' | grep "enabled"> /dev/null 2>&1
+        completed=$?
+        if [ $completed -ne 0 ]; then
+            sleep 10
+            attempts=$((attempts+1))
+        fi
+    done
+    return $completed
+}
+
+# ********************************************************************
+#
+#       Procedures
+#
+# ********************************************************************
+
+### Function: configure_mws ###
+#
+# Configures the MWS
+#
+# Arguments: none
+# Uses: SHARE_LOCATION
+# Return Values: none
+configure_mws()
+{
+        run_step 1 verify_jump
+
+        run_step 2 get_rhel_media
+
+        run_step 3 install_rpm_packages
+
+        run_step 4 remove_dhcpd_conf
+
+        run_step 5 remove_ERICkickstart
+
+        run_step 6 install_ERICkickstart
+
+        run_step 7 cache_rhel
+
+        run_step 8 upgrade_om
+
+        run_step 9 cache_om
+
+        run_step 10 update_loghost
+
+        run_step 11 update_nsswitch
+
+        run_step 12 do_disable_mpath
+
+        run_step 13 create_repos
+
+	run_step 14 verify_patch_media
+
+	run_step 15 enable_services
+
+        run_step 16 configure_interface "STORAGE" ${STORAGE_NIC} ${STORAGE_IP} ${STORAGE_NETMASK}
+
+        run_step 17 configure_interface "MANAGEMENT" ${MANAGEMENT_NIC} ${MANAGEMENT_IP} ${MANAGEMENT_NETMASK}
+        run_step 18 configure_interface "BACKUP" ${BACKUP_NIC} ${BACKUP_IP} ${BACKUP_NETMASK}
+
+        run_step 19 do_reboot
+
+        return 0
+
+}
+
+
+### Function: setup_env ###
+#
+# Set up environment variables for script.
+#
+# Arguments: none
+# Sets: TEM_DIR, SHARE_LOCATION, REPO_SOURCE, PKG_SUBDIR, SOLARIS_REPO_DIR
+#       QUOTA_VAL, JUMP_LOC, MWS_IP
+# Return Values: none
+setup_env()
+{
+    # Loop until we get a unique directory name
+    TEM_DIR=/tmp/mws_configure.$$
+    while :; do
+        $LS ${TEM_DIR} >> /dev/null 2>&1
+        [ $? -ne 0 ] && break
+        TEM_DIR=${TEM_DIR}.$$
+    done
+    do_cmd $MKDIR -p ${TEM_DIR}
+
+    JUMP_LOC="/JUMP"
+    MWS_IP=$($GETENT hosts `$HOSTNAME` | $AWK '{print $1}')
+
+
+}
+
+### Function: usage_msg ###
+#
+#  Usage message
+#
+# Arguments: none
+# Return Values: none
+usage_msg()
+{
+    local tmp_file=/tmp/mws_configure_usage.$$
+
+    $ECHO "
+Usage: $($BASENAME $0) [ -r <step> ]
+
+Options:
+    -r    Resume from step number
+
+" > ${tmp_file}
+    $PG -p "Press return key to continue" -e  ${tmp_file}
+
+    $RM -f ${tmp_file}
+    exit 1
+}
+
+
+### Function: get_param ###
+#
+# Gets parameter from param file
+#
+# Arguments:
+#     #1: Parameter to look for
+# Sets:
+#     PARAM_NAME - value found
+# Returns:
+#     None
+get_param()
+{
+    local name=$1
+    PARAM_NAME=`$AWK -F= "/${name}/{print \\$2}" ${PARAMSFILE}`
+    return 0
+}
+
+### Function: update_params ###
+#
+# Updates Params File
+#
+# Arguments:
+#       $1: Parameter to update
+#       $2: New values
+# Uses:
+#     PARAMSFILE
+# Return Values:
+#       none
+update_params() {
+    local param_name=$1 param_val=$2
+    [ -f ${PARAMSFILE} ] && $GREP -v ${param_name} ${PARAMSFILE} > ${PARAMSFILE}.tmp
+    $ECHO ${param_name}=${param_val} >> ${PARAMSFILE}.tmp
+    $MV ${PARAMSFILE}.tmp ${PARAMSFILE}
+    return 0
+}
+
+### Function: check_params ###
+#
+# Check the Input Parameters.
+#
+# Arguments:
+#       none
+# Sets:
+#     OM_MEDIA_LOC, MEDIA_DIR
+# Uses:
+#     RESUME_STEP, PARAMSFILE
+# Return Values:
+#       none
+check_params()
+{
+    local old_loc="" last_step
+    if [ -f ${PARAMSFILE} ]; then
+        old_loc=$($AWK -F= '/OM_MEDIA_LOC/ {print $2}' ${PARAMSFILE})
+    fi
+
+    if [[ -n "${RESUME_STEP}" ]]; then
+        if [[ ! ${RESUME_STEP} =~ ^[0-9]+$ ]]; then
+            abort_script "Invalid value for resume step ${RESUME_STEP}"
+        fi
+        if [ -f ${STEPSFILE} ]; then
+            last_step=$($CAT ${STEPSFILE})
+            user_confirm "Are you sure you wish to continue at step ${RESUME_STEP}, last successful step ran was ${last_step} (Yes/No)?"
+        else
+            user_confirm "Are you sure you wish to continue at step ${RESUME_STEP}, there is no record of any step passing before (Yes/No)?"
+        fi
+        if [ "${ANS}" == "No" ]; then
+            abort_script "Aborting, as do not want to resume from step ${RESUME_STEP}"
+        fi
+        RESUME_STEP=$(expr ${RESUME_STEP} - 1)
+    fi
+
+    $ECHO -e "\nPlease enter location of OM media: [${old_loc}]"
+    read OM_MEDIA_LOC
+    if [[ -z "${OM_MEDIA_LOC}" ]]; then
+        OM_MEDIA_LOC=${old_loc}
+    fi
+    [ -d "${OM_MEDIA_LOC}" ] || abort_script "OM Media location isn't valid directory"
+    [ -f "${OM_MEDIA_LOC}/omtools/upgrade_om.bsh" ] || abort_script "OM media location doesn't contain omtools/upgrade_om.bsh"
+    update_params OM_MEDIA_LOC ${OM_MEDIA_LOC}
+    if [[ -n "${RESUME_STEP}" ]]; then
+        done_step ${RESUME_STEP}
+    fi
+    MEDIA_DIR=$($AWK -F= '/media_dir/ {print $2}' ${OM_MEDIA_LOC}/.om_linux)
+    return 0
+}
+
+### Function: check_full_pathname ###
+#
+# Checks whether $1 contains a full pathname
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+check_full_pathname()
+{
+
+    local filename check
+    filename=$($ECHO $1 | $SED -e 's/\/[\/]*/\//g' -e 's/[\/]*$//g')
+    check=$($ECHO ${filename} | $EGREP '^[/]')
+    if [ ! "${check}" ]; then
+        return 1
+    fi
+    return 0
+}
+
+### Function: check_id ###
+#
+#   Check that the effective id of the user is correct
+#   If not print error msg and exit.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+check_id()
+{
+    local checkid
+    checkid=$($ID  | $AWK -F\( '{print $2}' | $AWK -F\) '{print $1}')
+    if [ "${checkid}" != "$1" ]; then
+        return 1
+    fi
+    return 0
+}
+
+### Function: chk_create_logfile ###
+#
+# Check/Create Logfile
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+chk_create_logfile()
+{
+    do_cmd $MKDIR -p $($DIRNAME ${LOGFILE})
+    do_cmd $TOUCH -a ${LOGFILE}
+}
+
+
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+
+# ********************************************************************
+#   Initial Setup
+# ********************************************************************
+
+SCRIPT_NAME=$($BASENAME $0)
+SCRIPTHOME=$(cd $($DIRNAME $0) 2>/dev/null && pwd || $ECHO $($DIRNAME $0))
+LOGFILE="/var/tmp/mws_configure.log"
+STEPSFILE="/var/tmp/.mws_configure_steps"
+PARAMSFILE="/var/tmp/.mws_configure_params"
+DEFAULT_USER="root"
+HOST_ARCH=$($UNAME -p)
+KICKSTARTDIR=/ericsson/kickstart/bin
+
+
+log Process $$: $SCRIPT_NAME $*
+
+
+# Check the id of the user
+check_id ${DEFAULT_USER} || abort_script "You must be ${DEFAULT_USER} to execute this script."
+
+# ********************************************************************
+#   Parse flags and options
+# ********************************************************************
+while getopts ":r:" arg; do
+    case $arg in
+        r)  RESUME_STEP=${OPTARG}
+            ;;
+        \?) usage_msg
+            ;;
+    esac
+done
+shift $(expr ${OPTIND} - 1)
+
+setup_env
+
+chk_create_logfile
+check_params
+
+# Cleanup on interrupt
+trap "abort_script" 1 2 3 14 15
+# Func abort_script() will not have all env variables available after interrupt, so need update on that!
+
+# Perform Required Action
+configure_mws
+[ $? -ne 0 ] && abort_script "Failed to configure MWS"
+
+#cd ${SCRIPTHOME}
+$RM -rf ${TEM_DIR}
+
+exit 0
+

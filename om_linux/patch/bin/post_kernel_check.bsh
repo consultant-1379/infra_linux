@@ -1,0 +1,18 @@
+#!/bin/bash
+BASENAME=/bin/basename
+SCRIPT_NAME=$( $BASENAME $0 )
+DATE=/usr/bin/date
+DATETIME=`$DATE +%d-%m-%Y_%H-%M-%S`
+$(mkdir -p /var/ericsson/log/patch/ 2> /dev/null)
+LOGPATH="/var/ericsson/log/patch/${SCRIPT_NAME}_$DATETIME.log"
+UPDATED_KERNEL=`cat /var/tmp/kernel_update.txt`
+CURRENT_KERNEL=`uname -r`
+if [[   $UPDATED_KERNEL == $CURRENT_KERNEL ]]; then
+	    echo  "Kernel is up to date with latest version" | tee $LOGPATH
+	    echo  "log path for post check  $LOGPATH"
+	    exit 0
+else
+	    echo  "Kernel version failed to update" | tee $LOGPATH
+	    echo  "log path for post check  $LOGPATH"
+	    exit 1
+fi

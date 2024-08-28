@@ -1,0 +1,338 @@
+#!/bin/bash
+#Red Hat Linux Patching Script
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+#
+# (c) Ericsson Radio Systems AB 2019 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : pre_upgrade_patchrhel.bsh
+# Date    : 1/1/2019
+# Revision: A
+# Purpose : This script to check whether the update required or not for system.
+#
+#
+# Version Information:
+#       Version Who       		      Date            Comment
+#       0.1     xanjgop & xkumvig         02/01/2019      Initial draft
+#
+#
+# ********************************************************************
+ARGS="${@}"
+MOUNT_PATH=$1
+setVars() {
+#####################################
+# Function to set up global Variables
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0 or exits
+#####################################
+
+# Commands
+AT=/usr/bin/at
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+CAT=/usr/bin/cat
+CHMOD=/bin/chmod
+CKSUM=/usr/bin/cksum
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+CRONTAB=/usr/bin/crontab
+CUT=/usr/bin/cut
+DATE=/usr/bin/date
+DATETIME=`$DATE +%d-%m-%Y_%H-%M-%S`
+YUMDATE=$($DATE "+%Y-%m-%d %H:%M")
+ECHO=/usr/bin/echo
+EGREP=/usr/bin/egrep
+ETHTOOL=/usr/sbin/ethtool
+FGREP=/usr/bin/fgrep
+FIND=/usr/bin/find
+GAWK=/usr/bin/gawk
+GREP=/usr/bin/grep
+HEAD=/usr/bin/head
+HOSTNAME=/usr/bin/hostname
+IFCONFIG=/usr/sbin/ifconfig
+LS=/usr/bin/ls
+LSHAL=/usr/bin/lshal
+DMIDECODE=/usr/sbin/dmidecode
+MKDIR=/usr/bin/mkdir
+MV=/usr/bin/mv
+PASTE=/usr/bin/paste
+PRINTF=/usr/bin/printf
+RM=/usr/bin/rm
+RPM=/usr/bin/rpm
+SCP=/usr/bin/scp
+SED=/usr/bin/sed
+SERVICE=/usr/sbin/service
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SSH=/usr/bin/ssh
+TAIL=/usr/bin/tail
+TAR=/usr/bin/tar
+TEE=/usr/bin/tee
+TELINIT=/usr/sbin/telinit
+TOUCH=/usr/bin/touch
+TR=/usr/bin/tr
+UNAME=/usr/bin/uname
+UNIQ=/usr/bin/uniq
+WC=/usr/bin/wc
+YUM=/usr/bin/yum
+# Flags
+DEBUG=n
+CONSOLE_PROMPT=TRUE
+# paths 1
+ROOT_CRONTAB_LINUX=/var/spool/cron/root
+### goc uncomment following when RPM is ready and comment the line after
+SCRIPT_NAME=$( $BASENAME $0 )
+SCRIPT_DIR=$( cd $( dirname $0 ); pwd )
+LIB_DIR=$( cd $( dirname $0 ); pwd -P )
+LIB_DIR="$LIB_DIR/../lib/"
+LOG_DIR=/var/ericsson/log/patch/
+LOG=${LOG_DIR}/${SCRIPT_NAME}_${DATETIME}.log
+PKGLOG=${LOG_DIR}/${SCRIPT_NAME}_PACKAGES_${DATETIME}.log
+YUMLOG=${LOG_DIR}/${SCRIPT_NAME}_YUM_${DATETIME}.log
+LIB_COMM=common_functions.lib
+BC=/usr/bin/bc
+CAT=/usr/bin/cat
+UG_ONLY_TEMP_REPO="--disablerepo=* --enablerepo=temp_rhel_update.repo"
+REPONAME=temp_rhel_update.repo
+REPOFILE=/etc/yum.repos.d/${REPONAME}
+REPODIRECTORY=/var/tmp/rhel_bundle
+RHEL_VERSION_FILE=`cat /etc/redhat-release | awk -F" " '{print $7}'`
+REDHAT_RELEASE=/etc/redhat-release
+MWS=/ericsson/config
+ENIQ=/eniq/installation/config
+INSTALL_LOG=/var/tmp/install_log
+PACKAGE_PATH=`ls $MOUNT_PATH/RHEL/ 2> /dev/null | grep "RHEL[^_]"`
+MOUNT_PACKAGE_PATH=$MOUNT_PATH/RHEL/$PACKAGE_PATH
+repo_mount="$MOUNT_PATH/Packages"
+$($TOUCH  /etc/.ks_serv_ip)
+mws_ip=`cat /etc/.ks_serv_ip 2> /dev/null`
+COMPLIANCE_script="/ericsson/security/compliance/NH_Compliance.py"
+COMPLIANCE_REPORT="Compliance_Report" 
+COMPLIANCE_LOG="/ericsson/security/compliance/Reports/${COMPLIANCE_REPORT}.txt"
+######################
+# Load common library
+######################
+[[ -f ${LIB_DIR}/${LIB_COMM} ]] && . ${LIB_DIR}/${LIB_COMM}
+[[ -f ${SCRIPT_DIR}/${LIB_COMM} ]] && . ${SCRIPT_DIR}/${LIB_COMM}
+[[ ! -f ${LIB_DIR}/${LIB_COMM} && ! -f ${SCRIPT_DIR}/${LIB_COMM} ]] && {
+	        $ECHO -e "\t\t\t\033[1;30;31m[ERROR]\033[0m\tNo library found!"
+       		 exit 2 
+        }
+return 0
+
+}
+#########################################################
+#                                                       #
+#       Check mount path is available for patch ISO     #
+#                                                       #
+#########################################################
+
+function mount_iso()
+{
+if [ -d $MOUNT_PATH ]; then
+        logOut "INFO"  "cached  path ($MOUNT_PATH)   is available"
+        if [ ! -d $MOUNT_PATH/RHEL ] && [ ! -d $repo_mount ]; then
+                 exitOut 2  "cached patch path directory is empty"
+        fi
+else
+        exitOut 2   " Mount path is not avaiable,  Cache  patch Media  and continue"
+fi
+}
+
+
+##############################################################
+#                                                            #
+#       Check the RHELVERSION of bundle is correct or not    #
+#                                                            #
+##############################################################
+
+function checkInternalversion()
+{
+	if [ -d $repo_mount ]; then
+		RHELVERSION=$($CAT $repo_mount/../media.repo | grep name= |  awk -F" " '{print $5}')
+		MOUNT_PACKAGE_PATH="$MOUNT_PATH"
+	else
+		RHELVERSION=$(grep  "media_distro_rev" $MOUNT_PATH/.upgrade_patch_boot_media 2> /dev/null | cut -d "=" -f 2)
+	fi
+	res=`awk -v n1="$RHEL_VERSION_FILE" -v n2="$RHELVERSION" 'BEGIN {printf  (n1<=n2?"0":"1") "\n" }'`
+        if [ $res == 0 ]; then
+                 logOut "INFO"  "RHEL_BUNDLE contains $RHELVERSION version"
+        else
+                exitOut 2  "RHEL version is lower in the  media so installation aborted"
+        fi
+	return 0
+}
+
+
+##############################################################
+#                                                            #
+#       Make repository file ---- temp_rhel_update.repo      #
+#                                                            #
+##############################################################
+
+function makeRepoFile()  {
+        logOut "INFO"   "Making repository file temp_rhel_update.repo"
+$CAT << EOF >$REPOFILE
+[temp_rhel_update.repo]
+name=Temporary Red Hat Enterprise Linux Update Repository
+baseurl=file://$MOUNT_PACKAGE_PATH
+enabled=1
+gpgcheck=0
+EOF
+}
+
+
+###############################################################
+#                                                             #
+#   function to check whether patch update is required or not #
+#                                                             #
+###############################################################
+
+function alreadyInstalled()
+{
+        logOut "INFO"  "Checking if the media  is already installed or not"
+        $YUM clean all >/dev/null 2>&1 ; rm -rf /var/cache/yum
+        [ $? == 0 ] ||  logOut "INFO" "YUM clean all is not success"
+	$YUM $UG_ONLY_TEMP_REPO check-update 2>&1 >  $YUMLOG
+        update_required=$?
+        if [ $update_required == 0 ]; then
+                logOut "INFO"  "No packages to update"
+		exitOut 1   "Exiting the script"
+        elif [ $update_required == 1 ]; then
+                logOut "ERROR"  "ERROR in repo "
+		exitOut 2  "Exiting the script"
+        elif [ $update_required == 100 ]; then
+		logOut "INFO" "Yum log $YUMLOG"
+	        logOut "INFO" "Everything is fine please call the patch_upgrade script"
+		$(echo $MOUNT_PATH > /etc/mountpath)
+		exitOut 0  "Exiting the Script"
+	else
+		logOut "INFO" "Yum log $YUMLOG"
+        	exitOut 2  "Issue in YUM check-update" 
+			
+        fi
+}
+
+check_compliance_script_()
+{
+        flag=$1
+        while : ; do
+                  echo -ne "#"
+                  sleep 1
+                  if [ $flag == 1 ]; then
+                          $(${COMPLIANCE_script}  >  $COMPLIANCE_LOG 2> /dev/null )&
+                          child_pid=$!
+                  fi
+                  flag=0
+                  $(kill -0 $child_pid 2> /dev/null)
+                  if [ ! $? == 0 ]; then
+                          wait $child_pid
+                          if [ ! $? == 0 ]; then
+                                  echo
+                                  logOut  "ERROR" "Issue in NODE HARDENING COMPLIANCE_script and please check the log [$COMPLIANCE_LOG]."
+                                  return 1
+                          fi
+                          break
+                  fi
+        done
+}
+
+check_compliance()
+{
+        logOut "INFO" "Taking Node hardening compliance report please wait"
+        if [ -f ${COMPLIANCE_script} ]; then
+                if [ ! -d "/ericsson/security/compliance/Reports/" ]; then
+                        logOut  "ERROR" "Issue in NODE HARDENING COMPLIANCE_script/ Node hardening is not applied."
+                        return 1
+                fi
+                check_compliance_script_ 1 || return 1
+                $(${CHMOD} -w $COMPLIANCE_LOG)
+                logOut "INFO" "compliance report generated and report path is $COMPLIANCE_LOG"
+                return 0
+        fi
+        logOut  "ERROR" "Issue in NODE HARDENING COMPLIANCE_script/ Node hardening is not applied."
+}              
+
+usage()
+{
+#####################################
+# Function to output usage help
+#####################################
+# Inputs:       none
+# Outputs:      none
+# Returns:      0
+#####################################
+$CAT << EOF
+
+Usage:  ${SCRIPT_NAME} <CACHED PATH>
+
+	Info:
+        <CACHED PATH>      Cached path of Patch meadia
+
+        Example:
+                ${SCRIPT_NAME}  /net/10.45.198.174/JUMP/UPGRADE_PATCH_MEDIA/1/
+
+EOF
+return 0
+
+}
+
+function trap_ctrlc ()
+{
+#    this function is called when Ctrl-C is sent
+    # perform cleanup here
+    echo "Ctrl-C caught...performing clean up"
+    logOut "INFO" "Doing cleanup please wait"
+    cleanUp "$UG_REPOFILE"
+    $(> /etc/mountpath)
+    logOut "WARNING" "Run pre_upgrade_patchrhel.bsh script to continue upgrade"
+
+    exitOut 2 "Exiting the Script after clean up due  to Ctrl-C caught"
+}
+check_dvd_kick()
+{
+       if [ -z $mws_ip ]; then
+               logOut "INFO" "This server  installed with DVD method"
+               read -p "Please enter the NFS shared Server IP address :" nfs_ip
+	       $($ECHO $nfs_ip > /etc/.ks_serv_ip)		
+               logOut "INFO" "Please run the \'create_dir_MWS/' in NFS shared Server to keep the OS BACKUP file"
+		
+	fi
+
+}
+#############
+#
+#       MAIN
+#
+#############
+###################
+#preupgrade
+##################
+setVars
+$MKDIR -p "$LOG_DIR" || exitOut "2" "Unable to create $LOG_DIR"
+trap trap_ctrlc  2
+
+header "MAIN" "Host: $($HOSTNAME)" "$(datestamp 2)" "Command: \"${SCRIPT_NAME} $ARGS\""
+[[ -z "$ARGS" ]] && {
+	usage
+        exitOut 2  "No command line options supplied!"
+}
+mount_iso
+check_dvd_kick
+check_compliance
+checkInternalversion
+makeRepoFile
+alreadyInstalled
+

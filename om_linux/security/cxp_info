@@ -1,0 +1,5 @@
+PKGINST=security 
+NAME=security 
+ARCH=noarch 
+VERSION=R1D01 
+PRODNUM=CXP9037099

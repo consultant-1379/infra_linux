@@ -1,0 +1,12 @@
+ddc:ERICddccore_CXP9035927-1.6.1.rpm:all
+ddc:ERICddc_CXP9036607-4.3.7-SNAPSHOT20181009121350.noarch.rpm:all
+EMC/x86_64:HostAgent-Linux-64-x86-en_US-1.3.9.1.0155-1.x86_64.rpm:all
+EMC/x86_64:navicli-7.33.1.0.33.rpm:all
+EMC/x86_64:UnisphereCLI-Linux-64-x86-en_US-4.4.0.374378-1.x86_64.rpm:all
+ddc:ERICddccore_CXP9035927-1.5.1.rpm:mws
+ddc:ERICddc_CXP9036607-4.3.7-SNAPSHOT20181009121350.noarch.rpm:mws
+EMC/x86_64:HostAgent-Linux-64-x86-en_US-1.3.9.1.0155-1.x86_64.rpm:mws
+EMC/x86_64:navicli-7.33.1.0.33.rpm:mws
+EMC/x86_64:UnisphereCLI-Linux-64-x86-en_US-4.4.0.374378-1.x86_64.rpm:mws
+EMC/x86_64:inittool-1.3.3.1.0072.rpm:mws
+EMC/x86_64:inittool-1.3.3.1.0072.rpm:all

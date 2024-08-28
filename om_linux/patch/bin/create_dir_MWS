@@ -1,0 +1,44 @@
+#!/bin/bash
+ARGS="${@}"
+check_already()
+{
+	server=$1
+	res=`grep $server /etc/exports 2> /dev/null`
+	if [ -z "$res" ]; then
+		return 0
+	fi	
+	echo "$server already added in the /etc/exports file"
+	exit 0
+}
+adding_client()
+{
+	server=$1
+	$(mkdir -p /JUMP/OS_BACK_UP/$server)
+	if [ $? -ne 0 ]; then
+	        echo "Problem in creating the client Dir /JUMP/OS_BACK_UP/$serve"
+	        exit
+	fi
+	echo "/JUMP/OS_BACK_UP/$server  directory Created successfully"
+	res=`uname`
+	if [ $res == "Linux" ]; then
+		check_already $server
+		echo "/JUMP/ $server(rw,sync,no_root_squash)" >> /etc/exports
+	        $(exportfs -a)
+	else
+		`share -F nfs -o rw=@$server /JUMP`
+	fi
+}
+[[ -z "$ARGS" ]] && {
+	read -p "Enter client server name correctly : " server
+	echo "provided Server name is $server"
+	adding_client $server
+	exit 0
+}
+echo Number of clients: "$#"
+echo Client Hostname list: "$*"
+
+for i in ${ARGS}
+do
+	adding_client $i
+done
+
